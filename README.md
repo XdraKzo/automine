@@ -1,0 +1,2 @@
+# automine
+Automineps99
