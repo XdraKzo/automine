@@ -3686,14 +3686,3 @@ while task.wait() do
         repeat task.wait(0.5) until not Mining.IsMineResetting()
     end
 end
--- ==========================================
--- ANTI-AFK SİSTEMİ
--- ==========================================
-local VirtualUser = game:GetService("VirtualUser")
-local Players = game:GetService("Players")
-
-Players.LocalPlayer.Idled:Connect(function()
-    VirtualUser:CaptureController()
-    VirtualUser:ClickButton2(Vector2.new())
-    print("[Anti-AFK] AFK tespiti engellendi!")
-end)
