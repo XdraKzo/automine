@@ -3686,3 +3686,8 @@ while task.wait() do
         repeat task.wait(0.5) until not Mining.IsMineResetting()
     end
 end
+-- ANTI-AFK
+LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
