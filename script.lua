@@ -154,7 +154,7 @@ do
         -- Ores = {"Rainbow", "Amethyst", "Emerald"}, -- hedef nadirler (oncelik sirasiyla). Blok id'si veya gorunen isim
         ResolveOres = true, -- Ores'deki isimleri harita bloklariyla eslestir
         -- SERVER HOP: hedef nadir (Nebulite / Dark Matter) yoksa baska server'a gec
-        ServerHop = false,
+        ServerHop = true,
         HopOres = {"Emerald", "Amethyst", "Rainbow"}, -- kirilacak nadirler (Helium-3, Nebulite, Dark Matter)
         -- HopRequire = {"Amethyst", "Rainbow"}, -- server'da kalmak icin bunlardan en az HopMinOres tane olmali (yoksa HopOres ile ayni)
         HopMinPlayers = 1,       -- hop atilacak server'da en az kac oyuncu olsun (1 = en bos server'lar once)
