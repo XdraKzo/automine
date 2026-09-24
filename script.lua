@@ -19,11 +19,11 @@ do
         DirectedPriorityWeight = 2, -- nadir onceligi agirligi (buyuk = onemli nadire daha cok yol gider)
 
         -- Pickaxe gorevlerinin istedigi nadirleri otomatik hedefe ekler ve ilerlemeyi konsola yazar.
-        AutoBuyPickaxe = true,     -- gorevler bitince pickaxe'i gem ile otomatik satin al
-        AutoStarterPickaxe = true, -- pickaxe yoksa menuden almayi dene (fresh hesap)
-        GUIShowQuests = true,      -- GUI'de pickaxe / gorev paneli
+        AutoBuyPickaxe = false,    -- gorevler bitince pickaxe'i gem ile otomatik satin al (QuestFirst ile birlikte)
+        AutoStarterPickaxe = false, -- pickaxe yoksa menuden almayi dene (fresh hesap)
+        GUIShowQuests = false,     -- GUI'de pickaxe / gorev paneli
         -- PickaxeOrder = {"Scrap","Steel","Titanium","Plasma","Laser","Helium-3"}, -- gorev N -> odul pickaxe (N+1. isim)
-        QuestFirst = true,   -- pickaxe/area gorevleri bitene kadar gorevin istedigini kir; sonra ore farmi
+        QuestFirst = false,   -- pickaxe/area gorevleri bitene kadar gorevin istedigini kir; sonra ore farmi
 
         -- Takilma korumasi: bu kadar sn hic blok kirilamazsa alanin ustune isinlanip bekler ve durumu sifirlar.
         AutoUnstuck = true,
@@ -147,6 +147,28 @@ do
         FallbackBreakTime = 0,
 
         -- Height used while standing above the active mining layer.
+        -- KOLAY AYARLAR
+        OreFarm = true,     -- true: asagidaki Ores listesindeki nadirleri hedefle (hedefli kazi)
+        NormalFarm = false, -- true: nadirin yaninda NORMAL bloklari da kir (her blok). false: sadece nadire ulasmak icin gereken kazi
+        -- Ores = {"Rainbow", "Amethyst", "Emerald"}, -- hedef nadirler (oncelik sirasiyla). Blok id'si veya gorunen isim
+        ResolveOres = true, -- Ores'deki isimleri harita bloklariyla eslestir
+        -- SERVER HOP: hedef nadir (Nebulite / Dark Matter) yoksa baska server'a gec
+        ServerHop = true,
+        HopOres = {"Emerald", "Amethyst", "Rainbow"}, -- kirilacak nadirler (Helium-3, Nebulite, Dark Matter)
+        -- HopRequire = {"Amethyst", "Rainbow"}, -- server'da kalmak icin bunlardan en az HopMinOres tane olmali (yoksa HopOres ile ayni)
+        HopMinPlayers = 1,       -- hop atilacak server'da en az kac oyuncu olsun (1 = en bos server'lar once)
+        HopMinOres = 1,          -- server'a girince en az bu kadar nadir yoksa hemen hop at; varsa hepsi bitene kadar kaz
+        HopMinSeconds = 3,       -- world yuklendikten sonra karar vermeden once bekleme
+        HopStallSeconds = 20,    -- kalan nadir sayisi bu kadar sn degismezse (kirilamiyorsa) hop at
+        HopVerifySeconds = 1.5,  -- "nadir yok" sonucunu dogrulama suresi
+        HopMaxMineSeconds = 120, -- bir server'da en fazla kazma suresi
+        -- HopRadius = 300,      -- (istege bagli) mine girisine bu kadar stud yakinlikta bakilir; yoksa tum harita
+        -- HopScriptURL = "https://raw.githubusercontent.com/KULLANICI/REPO/main/script.lua", -- hop sonrasi otomatik yeniden yukleme
+
+        FastDrill = true,   -- hizli boru hatti kazi (sorun cikarirsa false)
+        DrillBlocks = 40,   -- bir adimda en fazla atilacak blok
+        DrillStartWait = 0.06, -- blok basina baslangic bekleme payi (sistem kendi ogrenir)
+
         HoverHeight = 4,
 
         -- BlockWorlds mining remotes stop working at roughly 41 studs.
@@ -202,6 +224,7 @@ do
     local OptionalKeys = {
         MineTeleportPosition = true, MineTeleportPad = true, GUIGemIDs = true, OreDisplayNames = true,
         SweepStepXZ = true, SweepStepY = true, StandAtCenter = true, PersistentSkipSeconds = true,
+        HopRadius = true, HopScriptURL = true, HopRequire = true, HopMinPlayers = true,
     }
 
     for Alias, Real in pairs(Aliases) do
@@ -226,12 +249,48 @@ do
         end
     end
 
+    -- kolay ayarlar -> gercek ayarlar
+    if type(Source.Ores) == "table" then
+        local Copy = {}
+        for _, Name in ipairs(Source.Ores) do table.insert(Copy, Name) end
+        if #Copy > 0 then Defaults.BlockPriority = Copy end
+    end
+
+    if Source.MineAllBlocks == nil and Source.MineAllOres == nil then
+        if Source.NormalFarm ~= nil then
+            Defaults.MineAllBlocks = Source.NormalFarm == true
+        elseif Source.OreFarm == false then
+            Defaults.MineAllBlocks = true
+        end
+    end
+
+    if Defaults.ServerHop == true or Source.ServerHop == true then
+        local Have = {}
+        for _, Name in ipairs(Defaults.BlockPriority) do Have[tostring(Name):lower()] = true end
+
+        for _, Name in ipairs(Source.HopOres or Defaults.HopOres) do
+            if not Have[tostring(Name):lower()] then
+                table.insert(Defaults.BlockPriority, Name)
+                Have[tostring(Name):lower()] = true
+            end
+        end
+    end
+
+    if Source.OreFarm == false and Source.NormalFarm == false then
+        warn("[Config] OreFarm ve NormalFarm ikisi de false; OreFarm acik kabul edildi.")
+        Defaults.OreFarm = true
+    end
+
     Defaults.__User = Source
     getgenv().Settings = Defaults
 
 end
 
 Debug = Settings.Debug or {}
+
+print(("[Script] surum: hop-v3.6 (24.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
+    tostring(Settings.ServerHop), tostring(Settings.OreFarm), tostring(Settings.MineAllBlocks == true),
+    table.concat(Settings.BlockPriority, ","), tostring(Settings.HopScriptURL ~= nil)))
 
 getgenv().Mining = {
     Blocks = {},
@@ -440,8 +499,22 @@ function Mining.GetBlockBreakTime(Block)
         local UserDamage = MiningUtil.ComputeDamage(LocalPlayer, SelectedPickaxe, BestPickaxe, BlockData)
         local UserSpeed = MiningUtil.ComputeSpeed(LocalPlayer, SelectedPickaxe)
         local DamagePerSecond = UserDamage * UserSpeed
+        local BlockId = BlockData and BlockData._id
+
+        Mining.BTLogged = Mining.BTLogged or {}
+
+        if BlockId and not Mining.BTLogged[BlockId] and (Mining.BTLoggedCount or 0) < 16 then
+            Mining.BTLogged[BlockId] = true
+            Mining.BTLoggedCount = (Mining.BTLoggedCount or 0) + 1
+
+            print(("[Speed] %s (%s): guc=%s tier=%s | hasar=%s hiz=%s -> sure=%s sn"):format(
+                tostring(BlockId), tostring(BlockData.DisplayName), tostring(BlockData.Strength), tostring(BlockData.Tier),
+                tostring(UserDamage), tostring(UserSpeed),
+                (DamagePerSecond and DamagePerSecond > 0) and string.format("%.3f", BlockData.Strength / DamagePerSecond) or "HESAPLANAMADI"))
+        end
 
         if not DamagePerSecond or DamagePerSecond <= 0 then
+            if BlockId then Mining.NoDamage = Mining.NoDamage or {}; Mining.NoDamage[BlockId] = true end
             return Settings.FallbackBreakTime or 0.05
         end
 
@@ -747,12 +820,92 @@ function Mining.GetZonePads()
     return List
 end
 
+-- Sahip olunan en yuksek zone (oyun modulu farkli yerde/adla olabilir; bulunamazsa nil)
+function Mining.GetMaxZone()
+    local Fn = Mining.MaxZoneFn
+
+    if not Fn then
+        local Found
+
+        local function TryModule(Mod)
+            if type(Mod) == "table" then
+                local F = rawget(Mod, "GetMaximumOwnedZoneNumber")
+                if type(F) ~= "function" then
+                    local Ok, V = pcall(function() return Mod.GetMaximumOwnedZoneNumber end)
+                    F = Ok and V or nil
+                end
+                if type(F) == "function" then return F end
+            end
+        end
+
+        Found = TryModule(Library.InstanceZoneCmds)
+
+        if not Found then
+            for _, Container in ipairs({Library, Library.Client}) do
+                if type(Container) == "table" then
+                    for _, Value in pairs(Container) do
+                        Found = TryModule(Value)
+                        if Found then break end
+                    end
+                end
+                if Found then break end
+            end
+        end
+
+        if not Found then
+            -- modulu ReplicatedStorage.Library icinden require ederek ara
+            pcall(function()
+                for _, Obj in ipairs(NLibrary:GetDescendants()) do
+                    if Obj:IsA("ModuleScript") and Obj.Name:find("ZoneCmds") then
+                        Found = TryModule(require(Obj))
+                        if Found then break end
+                    end
+                end
+            end)
+        end
+
+        if Found then
+            Mining.MaxZoneFn = Found
+            Fn = Found
+        elseif not Mining.MaxZoneWarned then
+            Mining.MaxZoneWarned = true
+            warn("[Zone] GetMaximumOwnedZoneNumber bulunamadi; zone sayisi pad'lerden alinacak. (TargetZone = 5 gibi sayi yazmani oneririm)")
+        end
+    end
+
+    if Fn then
+        local Ok, N = pcall(Fn)
+        N = Ok and tonumber(N) or nil
+        if N and N > 0 then return N end
+    end
+
+    return nil
+end
+
+-- Hedef zone ile sahip olunan en yuksek zone'un kucugu (kilitli zone icin bosuna tekrar denenmesin)
+function Mining.EffectiveZone(Zone)
+    local Number = tonumber(Zone)
+
+    if Zone == "max" or Zone == true then Number = math.huge end
+    if not Number then return nil end
+
+    local Max = Mining.GetMaxZone()
+
+    -- pad gecisinin indirdigi zone bu server'daki gercek tavan (pad 5 -> zone 4 gibi)
+    if Mining.ZoneCap then
+        Max = Max and math.min(Max, Mining.ZoneCap) or Mining.ZoneCap
+    end
+
+    if Max and Max > 0 then return math.min(Number, Max) end
+
+    return Number ~= math.huge and Number or nil
+end
+
 function Mining.TeleportToZone(SpecificZone)
     local Zone = SpecificZone or Settings.TargetZone
 
-    if not Zone and Library.InstanceZoneCmds and Library.InstanceZoneCmds.GetMaximumOwnedZoneNumber then
-        local ZoneOk, MaxZone = pcall(Library.InstanceZoneCmds.GetMaximumOwnedZoneNumber)
-        if ZoneOk then Zone = MaxZone end
+    if not Zone then
+        Zone = Mining.GetMaxZone()
     end
 
     if Zone == "max" or Zone == true then Zone = math.huge end
@@ -876,59 +1029,84 @@ function Mining.TeleportToZone(SpecificZone)
     ------------------------------------------------------------
     -- 2) Istenen zone'a gec (ornek: 5. area)
     ------------------------------------------------------------
-    if Zone and not Mining.ZoneAttempted and (tonumber(World.Id) or 0) < tonumber(Zone) then
-        -- zone gecisi sadece BIR KEZ denenir (farm sirasinda tekrar isinlanma yok)
-        Mining.ZoneAttempted = true
+    local EffectiveZone = Mining.EffectiveZone(Zone)
 
-        local Pads = Mining.GetZonePads()
+    if Zone and not Mining.ZoneAttempted and (tonumber(World.Id) or 0) < (EffectiveZone or tonumber(Zone)) then
+        -- zone gecisi: en fazla ZoneRetries kez denenir; farm sirasinda tekrar isinlanma yok
+        Mining.ZoneAttempted = true
+        Mining.ZoneTryAt = os.clock()
+
         local StartId = tonumber(World.Id) or 0
         local SafeCFrame = HumanoidRootPart.CFrame
         local Changed = false
         local Tried = 0
+        local MaxAttempts = math.max(1, Settings.ZoneRetries or 3)
 
-        -- en yuksek pad'den asagiya dene: kilitliyse sunucu seni sahip oldugun en yuksek zone'a alir
-        for _, Entry in ipairs(Pads) do
-            if Entry.Number > StartId and Entry.Number <= tonumber(Zone) then
-                local PadCF = PadCFrame(Entry.Obj)
+        for Attempt = 1, MaxAttempts do
+            if Changed or not IsCurrentRun() then break end
 
-                if PadCF then
-                    Tried += 1
+            -- pad'ler henuz yuklenmemis olabilir: 10 sn'ye kadar bekle
+            local Pads = Mining.GetZonePads()
+            local WaitPads = os.clock() + 10
 
-                    print(("[Teleport] zone %s pad'ine isinlaniyor: %s (su an zone %s)"):format(
-                        tostring(Entry.Number), Entry.Obj:GetFullName(), tostring(StartId)))
+            while #Pads == 0 and os.clock() < WaitPads do
+                task.wait(1)
+                Pads = Mining.GetZonePads()
+            end
 
-                    HumanoidRootPart.CFrame = PadCF
-                    HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+            -- aday pad'ler (buyukten kucuge). Deneme k -> k. pad; kilitli pad hicbir sey yapmazsa alttakine gec
+            local Candidates = {}
 
-                    local Deadline = os.clock() + (Tried == 1 and (Settings.ZoneSwitchTimeout or 20) or 8)
-
-                    repeat
-                        if not IsCurrentRun() then return end
-
-                        local Now = GetActiveWorld()
-
-                        if Now and tonumber(Now.Id) ~= StartId then
-                            World = Now
-                            Changed = true
-                            break
-                        end
-
-                        task.wait(0.5)
-                    until os.clock() >= Deadline
-
-                    if Changed then break end
+            for _, Entry in ipairs(Pads) do
+                if Entry.Number > StartId and Entry.Number <= tonumber(Zone) and PadCFrame(Entry.Obj) then
+                    table.insert(Candidates, Entry)
                 end
+            end
+
+            local Entry = Candidates[math.min(Attempt, #Candidates)]
+
+            if Entry then
+                Tried += 1
+
+                print(("[Teleport] zone %s pad'ine isinlaniyor: %s (su an zone %s, deneme %d/%d)"):format(
+                    tostring(Entry.Number), Entry.Obj:GetFullName(), tostring(StartId), Attempt, MaxAttempts))
+
+                HumanoidRootPart.CFrame = PadCFrame(Entry.Obj)
+                HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+
+                local Deadline = os.clock() + (Attempt == 1 and (Settings.ZoneSwitchTimeout or 45) or 30)
+
+                repeat
+                    if not IsCurrentRun() then return end
+
+                    local Now = GetActiveWorld()
+
+                    if Now and tonumber(Now.Id) ~= StartId then
+                        World = Now
+                        Changed = true
+                        break
+                    end
+
+                    task.wait(0.5)
+                until os.clock() >= Deadline
             end
         end
 
         if Tried == 0 then
-            Mining.PrintZoneDiagnostics(Zone, {})
+            Mining.ZoneAttempted = false -- pad bulunamadi: EnsureInMine biraz sonra tekrar denesin
+            Mining.ZonePadMisses = (Mining.ZonePadMisses or 0) + 1
+
+            if Mining.ZonePadMisses >= 6 then
+                Mining.ZoneAttempted = true
+                Mining.PrintZoneDiagnostics(Zone, {})
+            end
         elseif Changed then
             print(("[Teleport] zone %s -> %s gecildi."):format(tostring(StartId), tostring(World.Id)))
+            Mining.ZoneCap = tonumber(World.Id)
             task.wait(1) -- yeni world'un bloklari yuklensin
         else
-            -- world degismedi (zaten en yuksek acik zone'dasin ya da pad'ler kilitli): mine'a geri don
-            print(("[Teleport] zone %s'de kalinip farma devam ediliyor."):format(tostring(StartId)))
+            -- world degismedi: mine'a geri don
+            warn(("[Teleport] zone %s'den cikilamadi (%d deneme); bu zone'da devam ediliyor."):format(tostring(StartId), MaxAttempts))
 
             HumanoidRootPart.CFrame = SafeCFrame
             HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
@@ -1701,8 +1879,50 @@ function Mining.GetRegionCached()
     end
 end
 
--- Blok grid'i: X/Z 3, Y 2 hucre (orijinal tarama adimlariyla ayni)
-Mining.StrideX, Mining.StrideY, Mining.StrideZ = 3, 2, 3
+-- Blok grid adimlarini (X/Y/Z) bilinen bloklardan ogren; bulunamazsa 1'er hucre (eksiksiz tarama)
+Mining.StrideX, Mining.StrideY, Mining.StrideZ = 1, 1, 1
+
+function Mining.DetectGrid()
+    if Mining.GridDetected then return end
+
+    local Counts = {X = {}, Y = {}, Z = {}}
+    local N = 0
+
+    for _, B in pairs(World.Blocks) do
+        if B and B.Pos then
+            local P = B.Pos
+
+            for D = 1, 4 do
+                local Bx = Mining.GetLiveBlock(Vector3int16.new(P.X + D, P.Y, P.Z))
+                local By = Mining.GetLiveBlock(Vector3int16.new(P.X, P.Y + D, P.Z))
+                local Bz = Mining.GetLiveBlock(Vector3int16.new(P.X, P.Y, P.Z + D))
+
+                if Bx and Bx.Pos ~= P then Counts.X[D] = (Counts.X[D] or 0) + 1 end
+                if By and By.Pos ~= P then Counts.Y[D] = (Counts.Y[D] or 0) + 1 end
+                if Bz and Bz.Pos ~= P then Counts.Z[D] = (Counts.Z[D] or 0) + 1 end
+            end
+
+            N += 1
+            if N >= 60 then break end
+        end
+    end
+
+    local function Pick(Axis, Default)
+        if N == 0 then return Default end
+
+        for D = 1, 4 do
+            if (Counts[Axis][D] or 0) >= N * 0.3 then return D end
+        end
+
+        return Default
+    end
+
+    Mining.StrideX, Mining.StrideY, Mining.StrideZ = Pick("X", 1), Pick("Y", 1), Pick("Z", 1)
+    Mining.GridDetected = N > 0
+
+    print(("[Grid] blok adimi: X=%d Y=%d Z=%d (%d ornek)"):format(Mining.StrideX, Mining.StrideY, Mining.StrideZ, N))
+end
+
 
 -- Blogun en az bir komsusu bos (hava) mi? Gomulu nadirleri kirmaya calismak bosuna zaman kaybettirir.
 function Mining.IsExposed(Block)
@@ -1734,6 +1954,8 @@ function Mining.ScanOreMap()
     local Region = Mining.GetRegionCached()
 
     if not Region then return nil end
+
+    Mining.DetectGrid()
 
     local SX, SY, SZ = Mining.StrideX, Mining.StrideY, Mining.StrideZ
     local Cells = (math.floor((Region.Max.X - Region.Min.X) / SX) + 1) * (math.floor((Region.Max.Y - Region.Min.Y) / SY) + 1) *
@@ -1822,16 +2044,29 @@ function Mining.GetOreTargets(Columns)
     local WorldId = World and World.Id
 
     if not Mining.OreMap or Mining.OreMapWorldId ~= WorldId then
+        -- mine yeni resetlendiyse bloklar henuz yuklenmemis olabilir: kisa aralikla tekrar dene
+        if os.clock() < (Mining.OreMapRetryAt or 0) then return nil end
+
         Mining.Status = "Harita taraniyor"
 
         local Map = Mining.ScanOreMap()
 
         if not Map or #Map == 0 then
-            Mining.OreMapFailed = true
-            warn("[Directed] haritada nadir okunamadi; klasik kazi kullanilacak.")
+            Mining.OreMapMisses = (Mining.OreMapMisses or 0) + 1
+            Mining.OreMapRetryAt = os.clock() + 5
+
+            if Mining.OreMapMisses >= 6 then
+                Mining.OreMapFailed = true
+                warn("[Directed] haritada nadir okunamadi (6 deneme); klasik kazi kullanilacak.")
+            else
+                print(("[Directed] harita henuz bos / nadir yok (%d/6), 5 sn sonra tekrar taranacak; simdilik klasik kazi."):format(
+                    Mining.OreMapMisses))
+            end
+
             return nil
         end
 
+        Mining.OreMapMisses = 0
         Mining.OreMap = Map
         Mining.OreMapWorldId = WorldId
     end
@@ -1982,6 +2217,41 @@ function Mining.DigStep(Known)
 
     Mining.Status = ("Saft kaziyor (%d sutun)"):format(ActiveCount)
     Mining.ColumnIdle = Mining.ColumnIdle or {}
+
+    Mining.ProcessRecheck(false)
+
+    -- HIZLI KAZI: hedefli modda boru hatti ile kaz (Settings.FastDrill = false ile kapatilir)
+    if Directed and Settings.FastDrill ~= false and not Mining.DrillDisabled then
+        local DrillOk, Mined, Fired = pcall(Mining.DrillStep, ActiveKeys, Primary.Key)
+
+        if not DrillOk then
+            warn("[Drill] hata: " .. tostring(Mined))
+            Mining.DrillErrors = (Mining.DrillErrors or 0) + 1
+
+            if Mining.DrillErrors >= 3 then
+                Mining.DrillDisabled = true
+                warn("[Drill] hizli kazi kapatildi, klasik kazi kullanilacak.")
+            end
+        elseif Fired == 0 then
+            Mining.DrillZero = (Mining.DrillZero or 0) + 1
+
+            if Mining.DrillZero >= 6 then
+                Mining.DrillDisabled = true
+                warn("[Drill] hic blok atilamadi, klasik kazi kullanilacak.")
+            end
+        else
+            Mining.DrillZero = 0
+        end
+
+        Mining.StepCount = (Mining.StepCount or 0) + 1
+
+        if DrillOk and (Mining.StepCount % 5 == 1 or Debug.PrintMining) then
+            print(("[Drill] %d sutun | kirilan=%d / atilan=%d | bilinen=%d"):format(ActiveCount, Mined or 0, Fired or 0, #Known))
+        end
+
+        task.wait()
+        return
+    end
 
     local Rounds = Settings.DigBatch or 12
     local TotalMined = 0
@@ -2464,6 +2734,261 @@ function Mining.FastBreakList(List, Limit)
     end
 
     return Mined + PersistentDone, #Batch + PersistentDone
+end
+
+----------------------------------------------------------------
+-- HIZLI KAZI (seri boru hatti): Target -> bekle -> Break, dogrulama sonradan ve toplu.
+-- Blok verisini dogrudan okur (part yuklu olmasa da), sutunun bir alt blogunu bilir.
+----------------------------------------------------------------
+Mining.IdWait = Mining.IdWait or {}
+Mining.DrillRecheck = Mining.DrillRecheck or {}
+
+-- Bilinen ore gorunen isimleri (haritadan / bloktan ogrenilen isim her zaman bunlarin ustundedir)
+Mining.BuiltinOreNames = {
+    Rainbow = "Dark Matter Ore", Amethyst = "Nebulite Ore", Emerald = "Helium-3 Ore",
+    Ruby = "Star Ruby Ore", Sapphire = "Moonstone Ore",
+}
+Mining.DrillStats = Mining.DrillStats or {Ok = 0, Fail = 0, At = os.clock(), Fired = 0}
+Mining.DrillTries = Mining.DrillTries or {}
+
+function Mining.LearnDrill(Id, Ok)
+    local Stats = Mining.DrillStats
+    local W = Mining.IdWait[Id] or (Settings.DrillStartWait or 0.06)
+
+    if Ok then
+        Stats.Ok += 1
+        W = math.max(Settings.DrillMinWait or 0.02, W * 0.97)
+    else
+        Stats.Fail += 1
+        W = math.min(Settings.DrillMaxWait or 0.8, W * 1.25 + 0.03)
+    end
+
+    Mining.IdWait[Id] = W
+
+    local Elapsed = os.clock() - Stats.At
+
+    if Elapsed >= 30 then
+        local Parts = {}
+
+        for K, V in pairs(Mining.IdWait) do table.insert(Parts, ("%s=%.2f"):format(tostring(K), V)) end
+
+        table.sort(Parts)
+
+        print(("[Hiz] son %.0f sn: %d blok kirildi (%.1f/sn), %d basarisiz | bekleme: %s"):format(
+            Elapsed, Stats.Ok, Stats.Ok / Elapsed, Stats.Fail, table.concat(Parts, ", ")))
+
+        Stats.Ok, Stats.Fail, Stats.At = 0, 0, os.clock()
+    end
+end
+
+-- Nadir bloklar: "gitti" gorunen blok sunucu kabul etmediyse geri gelir. Bir sure sonra tekrar kontrol et.
+function Mining.ProcessRecheck(Force)
+    local List = Mining.DrillRecheck
+
+    if #List == 0 then return end
+
+    local Delay = Settings.OreRecheckDelay or 1.4
+    local Kept = {}
+
+    for _, P in ipairs(List) do
+        if not Force and os.clock() - P.At < Delay then
+            table.insert(Kept, P)
+        else
+            local Key = tostring(P.Pos)
+
+            if Mining.IsBlockAlive(P.Pos, P.Id) then
+                -- blok geri geldi: kirma sunucuda sayilmadi
+                Mining.MinedPositions[Key] = nil
+                Mining.LearnDrill(P.Id, false)
+                Mining.OreRejected = (Mining.OreRejected or 0) + 1
+
+                if os.clock() - (Mining.OreRejectPrintAt or 0) >= 10 then
+                    Mining.OreRejectPrintAt = os.clock()
+                    print(("[Drill] %s kirildi gorundu ama geri geldi (sunucu saymadi) x%d | bekleme -> %.2f"):format(
+                        tostring(P.Id), Mining.OreRejected, Mining.IdWait[P.Id] or 0))
+                end
+            else
+                Mining.LearnDrill(P.Id, true)
+                Mining.NoteBreak(P.Block, true)
+                Mining.CountBreak(P.Block)
+            end
+        end
+    end
+
+    Mining.DrillRecheck = Kept
+end
+
+function Mining.DrillStep(ActiveKeys, PrimaryKey)
+    local Network = Mining.GetNetwork()
+
+    if not Network then
+        error("[Mining] Could not find the current Network module with a Fire function.")
+    end
+
+    local Range = Settings.MiningRange or 40
+    local SY = Mining.StrideY or 1
+    local MaxBlocks = Settings.DrillBlocks or 40
+    local TimeLimit = Settings.DrillSeconds or 6
+    local VerifyDelay = Settings.DrillVerifyDelay or 0.4
+    local StartWait = Settings.DrillStartWait or 0.06
+    local Started = os.clock()
+    local Region = World:GetRegion()
+
+    local Cursors, Order = {}, {}
+
+    if ActiveKeys[PrimaryKey] then
+        table.insert(Order, PrimaryKey)
+        Cursors[PrimaryKey] = {Pos = ActiveKeys[PrimaryKey].Top.Pos, Col = ActiveKeys[PrimaryKey]}
+    end
+
+    for Key, Col in pairs(ActiveKeys) do
+        if Key ~= PrimaryKey then
+            table.insert(Order, Key)
+            Cursors[Key] = {Pos = Col.Top.Pos, Col = Col}
+        end
+    end
+
+    local Pending = {}
+    local Mined, Fired = 0, 0
+
+    local function Verify(Force)
+        while #Pending > 0 do
+            local P = Pending[1]
+
+            if not Force and os.clock() - P.At < VerifyDelay then break end
+
+            table.remove(Pending, 1)
+
+            local Key = tostring(P.Pos)
+
+            if Mining.IsBlockAlive(P.Pos, P.Id) then
+                Mining.LearnDrill(P.Id, false)
+                Mining.DrillTries[Key] = (Mining.DrillTries[Key] or 0) + 1
+
+                local C = Cursors[P.Key]
+
+                if Mining.DrillTries[Key] >= 5 then
+                    -- bu blok kirilmiyor: birak
+                    Mining.FailedPositions[Key] = os.clock() + 60
+                    Mining.DrillTries[Key] = nil
+                    Mining.NoteBreak(P.Block, false)
+
+                    if C then C.Done = true end
+                elseif C and P.Pos.Y < C.Pos.Y then
+                    C.Pos = P.Pos -- imleci geri al, tekrar dene
+                end
+            else
+                Mined += 1
+                Mining.DrillTries[Key] = nil
+                Mining.MinedPositions[Key] = true
+
+                if Settings.BlockPriority[P.Id] and Settings.OreRecheck ~= false then
+                    -- nadir: sayma ve ogrenme, geri gelmedigi dogrulaninca (ProcessRecheck)
+                    table.insert(Mining.DrillRecheck, P)
+                else
+                    Mining.LearnDrill(P.Id, true)
+                    Mining.NoteBreak(P.Block, true)
+                    Mining.CountBreak(P.Block)
+                end
+            end
+        end
+
+        Mining.ProcessRecheck(false)
+    end
+
+    while Fired < MaxBlocks and os.clock() - Started < TimeLimit and IsCurrentRun() do
+        if Mining.UnstickRequested then break end
+
+        local Any = false
+
+        for _, Key in ipairs(Order) do
+            local C = Cursors[Key]
+
+            if C and not C.Done and Fired < MaxBlocks then
+                -- imlecteki blogu bul (kirilmis/bos hucreleri asagi dogru gec)
+                local B, P = nil, C.Pos
+                local Steps = 0
+
+                while Steps < 10 do
+                    if Region and P.Y > Region.Max.Y then break end
+
+                    B = Mining.GetLiveBlock(P)
+                    if B then break end
+
+                    P = Vector3int16.new(P.X, P.Y + SY, P.Z)
+                    Steps += 1
+                end
+
+                if not B then
+                    C.Done = true
+                    Mining.DoneColumns[Key] = true
+                    Verify(true)
+                else
+                    C.Pos = B.Pos
+
+                    local Id = B.Dir._id
+                    local PosKey = tostring(B.Pos)
+
+                    if Mining.Unbreakable[Id] or Mining.IsSkipBlock(B) or
+                        (Mining.FailedPositions[PosKey] and Mining.FailedPositions[PosKey] > os.clock()) then
+                        C.Done = true
+                        Mining.DoneColumns[Key] = true
+                    else
+                        local BlockPos = (B.CFrame or C.Col.Top.CFrame).Position
+
+                        -- menzil disi: sadece ana sutun hareket ettirir, digerleri bu tur bekler
+                        if (HumanoidRootPart.Position - BlockPos).Magnitude >= Range - 5 then
+                            if Key == Order[1] or Order[1] == nil or (Cursors[Order[1]] and Cursors[Order[1]].Done) then
+                                Verify(true)
+                                Mining.MoveToMiningPosition(BlockPos + Vector3.new(0, Settings.HoverHeight or 4, 0))
+                                task.wait(Settings.DrillSettle or 0.15)
+                            else
+                                continue
+                            end
+                        end
+
+                        if Mining.IsPersistent(B) and B.Part and B.Part.Parent then
+                            Verify(true)
+                            Mining.BreakPersistent(B)
+                            C.Pos = Vector3int16.new(B.Pos.X, B.Pos.Y + SY, B.Pos.Z)
+                            Fired += 1
+                            Any = true
+                        else
+                            local BreakTime = Mining.GetCachedBreakTime(B)
+                            local Wait = math.max(BreakTime, 0) + (Mining.IdWait[Id] or StartWait) +
+                                (Settings.BlockPriority[Id] and (Settings.OreExtraWait or 0.06) or 0)
+
+                            Network.Fire("BlockWorlds_Target", B.Pos, RemoteCounter, false)
+                            task.wait(Wait)
+                            Network.Fire("BlockWorlds_Break", B.Pos, RemoteCounter)
+                            RemoteCounter += 1
+
+                            table.insert(Pending, {Block = B, Pos = B.Pos, Id = Id, At = os.clock(), Key = Key})
+                            C.Pos = Vector3int16.new(B.Pos.X, B.Pos.Y + SY, B.Pos.Z)
+                            Fired += 1
+                            Any = true
+
+                            Verify(false)
+                        end
+                    end
+                end
+            end
+        end
+
+        if not Any then break end
+    end
+
+    -- kalan dogrulamalari bekle (en fazla ~1 sn)
+    local FlushUntil = os.clock() + VerifyDelay + 0.6
+
+    while #Pending > 0 and os.clock() < FlushUntil do
+        task.wait(0.05)
+        Verify(false)
+    end
+
+    Verify(true)
+
+    return Mined, Fired
 end
 
 -- Zigzag (boustrophedon) sirala: sutun sutun, tek sutun bir yone, cift sutun ters yone
@@ -2968,6 +3493,7 @@ function Mining.MineOreByPos(Ore)
                 return false
             end
             if Key then Mining.MinedPositions[Key] = true end
+            if Mining.CountBreak then Mining.CountBreak(Ore) end
             return true
         end
 
@@ -2994,6 +3520,7 @@ function Mining.MineOreByPos(Ore)
         repeat
             if IsGone() then
                 if Key then Mining.MinedPositions[Key] = true end
+                if Mining.CountBreak then Mining.CountBreak(Ore) end
                 return true
             end
             task.wait(0.05)
@@ -3257,7 +3784,7 @@ function Mining.GetPickaxeQuests(Type)
         end
     end
 
-    if Library.InstanceZoneCmds.GetMaximumOwnedZoneNumber() < BestPickaxeQuest then
+    if (Mining.GetMaxZone() or 0) < BestPickaxeQuest then
         return
     end
 
@@ -3432,9 +3959,22 @@ function Mining.EnsureInMine(Force)
     end
     local ZoneOk = true
 
-    -- zone gecisi yalnizca bir kez denenir; sonrasinda zone'a bakilmaz (farm sirasinda geri isinlanma yok)
+    -- hala dusuk zone'da isek (gecis basarisiz oldu) 60 sn arayla en fazla 3 kez daha dene
+    if TargetZone and WorldActive and Mining.ZoneAttempted then
+        local Eff = Mining.EffectiveZone(TargetZone)
+
+        if Eff and (tonumber(World.Id) or 0) < Eff and (Mining.ZoneRetries or 0) < 3 and not Mining.IsMineResetting() and
+            os.clock() - (Mining.ZoneTryAt or 0) > 60 then
+            Mining.ZoneRetries = (Mining.ZoneRetries or 0) + 1
+            Mining.ZoneAttempted = false
+            print(("[Teleport] hala zone %s'desin (hedef %s); yeniden deneniyor (%d/3)"):format(
+                tostring(World.Id), tostring(Eff), Mining.ZoneRetries))
+        end
+    end
+
+    -- zone gecisi yalnizca sinirli kez denenir; sonrasinda zone'a bakilmaz
     if TargetZone and WorldActive and not Mining.ZoneAttempted then
-        ZoneOk = (tonumber(World.Id) or 0) >= TargetZone
+        ZoneOk = (tonumber(World.Id) or 0) >= (Mining.EffectiveZone(TargetZone) or TargetZone)
     end
 
     if InMine and WorldActive and ZoneOk and not Mining.NeedTeleport and not Force then
@@ -3489,6 +4029,8 @@ function Mining.EnsureInMine(Force)
     Mining.ActiveStandPosition = nil
     Mining.OreMap = nil
     Mining.OreMapFailed = false
+    Mining.OreMapMisses = 0
+    Mining.OreMapRetryAt = 0
     Mining.YStep = nil
     Mining.RegionCache = nil
 
@@ -3500,6 +4042,8 @@ function Mining.EnsureInMine(Force)
     Mining.LastTeleportAt = os.clock()
     Mining.LastProgressAt = os.clock()
     Mining.Ready = true
+    Mining.EnteredAt = os.clock()
+    Mining.HopOrigin = HumanoidRootPart.Position
     print(("[Teleport] mine bolgesindeyiz (zone %s)."):format(tostring(World and World.Id)))
 
     return true
@@ -3518,6 +4062,146 @@ else
     Mining.TeleportToZone()
 end
 
+-- Haritadaki tum blok turlerini (id -> gorunen isim, adet) tara
+function Mining.CatalogScan()
+    local Region = Mining.GetRegionCached()
+
+    if not Region then return {} end
+
+    Mining.DetectGrid()
+
+    local SX, SY, SZ = Mining.StrideX, Mining.StrideY, Mining.StrideZ
+    local Catalog, Calls = {}, 0
+
+    for y = Region.Min.Y, Region.Max.Y, SY do
+        for x = Region.Min.X, Region.Max.X, SX do
+            for z = Region.Min.Z, Region.Max.Z, SZ do
+                local Ok, Block = pcall(function() return World:GetBlock(Vector3int16.new(x, y, z)) end)
+
+                if Ok and Block and Block.Dir and Block.Dir._id then
+                    local Id = Block.Dir._id
+                    local Info = Catalog[Id]
+
+                    if not Info then
+                        local Name
+
+                        pcall(function()
+                            local Value = Block.Dir.DisplayName
+
+                            if type(Value) == "function" then
+                                local CallOk, Result = pcall(Value, Block.Dir)
+                                Value = CallOk and Result or nil
+                            end
+
+                            if type(Value) == "string" and Value ~= "" then Name = Value end
+                        end)
+
+                        Info = {Name = Name or Id, Count = 0}
+                        Catalog[Id] = Info
+                    end
+
+                    Info.Count += 1
+                end
+
+                Calls += 1
+                if Calls % 6000 == 0 then task.wait() end
+            end
+        end
+    end
+
+    return Catalog
+end
+
+-- Ayardaki ore isimlerini gercek blok id'lerine cevir (buyuk/kucuk harf, gorunen isim: "Helium-3 Ore" -> Emerald)
+function Mining.ResolveOres()
+    local List = Settings.BlockPriority
+    local Ok, Catalog = pcall(Mining.CatalogScan)
+
+    if not Ok or type(Catalog) ~= "table" or next(Catalog) == nil then
+        -- harita okunamadi: en azindan ilk harfi buyut
+        for I, Name in ipairs(List) do
+            if type(Name) == "string" and Name ~= "" then
+                List[I] = Name:sub(1, 1):upper() .. Name:sub(2)
+            end
+        end
+
+        return
+    end
+
+    local Lookup = {}
+
+    for Id, Info in pairs(Catalog) do
+        Lookup[Id:lower()] = Id
+
+        local Display = tostring(Info.Name):lower()
+        Lookup[Display] = Id
+        Lookup[(Display:gsub("%s*ore$", ""))] = Id
+        Lookup[(Display:gsub("%s+", ""))] = Id
+    end
+
+    Mining.OreCatalog, Mining.OreLookup = Catalog, Lookup
+
+    local Out, Seen = {}, {}
+
+    for _, Entry in ipairs(List) do
+        local Wanted = tostring(Entry)
+        local Key = Wanted:lower()
+        local Id = Catalog[Wanted] and Wanted or Lookup[Key] or Lookup[(Key:gsub("%s*ore$", ""))] or Lookup[(Key:gsub("%s+", ""))]
+
+        if Id then
+            if Id ~= Wanted then
+                print(("[Ore] '%s' -> blok id '%s' (%s)"):format(Wanted, Id, tostring(Catalog[Id].Name)))
+            end
+
+            if not Seen[Id] then
+                Seen[Id] = true
+                table.insert(Out, Id)
+            end
+        else
+            warn(("[Ore] '%s' bu haritada bulunamadi (baska zone'da olabilir); id olarak birakildi."):format(Wanted))
+
+            local Fallback = Wanted:sub(1, 1):upper() .. Wanted:sub(2)
+
+            if not Seen[Fallback] then
+                Seen[Fallback] = true
+                table.insert(Out, Fallback)
+            end
+        end
+    end
+
+    for K in pairs(List) do List[K] = nil end
+    for I, Id in ipairs(Out) do List[I] = Id end
+
+    Mining.OreNames = Mining.OreNames or {}
+
+    for _, Id in ipairs(Out) do
+        if Catalog[Id] and Catalog[Id].Name ~= Id then Mining.OreNames[Id] = Catalog[Id].Name end
+    end
+
+    -- konsola haritadaki nadir/ozel bloklari yaz (config'e neyi yazacagini gormek icin)
+    local Rows = {}
+
+    for Id, Info in pairs(Catalog) do
+        table.insert(Rows, {Id = Id, Name = tostring(Info.Name), Count = Info.Count})
+    end
+
+    table.sort(Rows, function(a, b) return a.Count < b.Count end)
+
+    local Parts = {}
+
+    for I = 1, math.min(#Rows, 14) do
+        local R = Rows[I]
+        table.insert(Parts, ("%s(%s)=%d"):format(R.Id, R.Name, R.Count))
+    end
+
+    print("[Ore] haritadaki en nadir bloklar: " .. table.concat(Parts, " | "))
+    print("[Ore] hedef nadirler: " .. table.concat(Out, ", "))
+end
+
+if Settings.ResolveOres ~= false then
+    pcall(Mining.ResolveOres)
+end
+
 for i, Ore in ipairs(Settings.BlockPriority) do
     Settings.BlockPriority[Ore] = i
 end
@@ -3530,7 +4214,7 @@ function Mining.TargetBlock(Args)
 
     if not Args.OreID and not Args.BlockPriority then
         Mining.TeleportToZone(1)
-    elseif World.Id ~= Library.InstanceZoneCmds.GetMaximumOwnedZoneNumber() then
+    elseif World.Id ~= (Mining.GetMaxZone() or World.Id) then
         Mining.TeleportToZone()
     end
 
@@ -4533,6 +5217,9 @@ function Mining.CreateGui()
 
                     if TextOk and type(QuestText) == "string" then
                         QuestLabel.Text = QuestText
+                    elseif not TextOk and not Mining.QuestTextWarned then
+                        Mining.QuestTextWarned = true
+                        warn("[GUI] gorev paneli hatasi: " .. tostring(QuestText))
                     end
                 end
                 YValue.Text = string.format("%.0f", HumanoidRootPart.Position.Y)
@@ -4547,8 +5234,11 @@ function Mining.CreateGui()
                 local Overrides = Settings.OreDisplayNames
 
                 for Id, Label in pairs(OreLabels) do
-                    local Name = (type(Overrides) == "table" and Overrides[Id]) or
-                        (Mining.OreNames and Mining.OreNames[Id]) or Id
+                    local Learned = Mining.OreNames and Mining.OreNames[Id]
+
+                    if Learned == Id then Learned = nil end
+
+                    local Name = (type(Overrides) == "table" and Overrides[Id]) or Learned or Mining.BuiltinOreNames[Id] or Id
 
                     if Label.Text ~= Name then Label.Text = Name end
                 end
@@ -4787,13 +5477,14 @@ function Mining.SetPriority(List)
     -- hedef degisti: nadir haritasi ve sutun durumu yeniden kurulsun
     Mining.OreMap = nil
     Mining.OreMapFailed = false
+    Mining.OreMapMisses = 0
+    Mining.OreMapRetryAt = 0
     Mining.CurrentShaft = nil
     Mining.DoneColumns = {}
 end
 
 local function MaxOwnedZone()
-    local Ok, N = pcall(Library.InstanceZoneCmds.GetMaximumOwnedZoneNumber)
-    return Ok and tonumber(N) or 0
+    return Mining.GetMaxZone() or 0
 end
 
 local function BestPickaxeName()
@@ -4962,6 +5653,8 @@ function Mining.TryClaim(Reason)
         Mining.RegionCache = nil
         Mining.OreMap = nil
         Mining.OreMapFailed = false
+    Mining.OreMapMisses = 0
+    Mining.OreMapRetryAt = 0
         Mining.DoneColumns = {}
         Mining.CurrentShaft = nil
         Mining.LastProgressAt = os.clock()
@@ -5639,7 +6332,7 @@ end
 -- Ana dongude cagrilir: neyin kirilacagini belirler
 function Mining.QuestStep()
     if Settings.QuestFirst == false then
-        Mining.SetPriority(nil)
+        if not Settings.ServerHop then Mining.SetPriority(nil) end
         return
     end
 
@@ -5712,6 +6405,381 @@ function Mining.QuestStep()
     if not Mining.QuestDonePrinted then
         Mining.QuestDonePrinted = true
         print(("[Quest] gorev/area isi kalmadi -> ore farmina geciliyor | zone=%s | pickaxe=%s"):format(tostring(World.Id), BestPickaxeName()))
+    end
+end
+
+----------------------------------------------------------------
+-- SERVER HOP: area'da Nebulite / Dark Matter varsa kir, yoksa baska server'a gec
+----------------------------------------------------------------
+local function SerializeValue(V)
+    local Kind = typeof(V)
+
+    if Kind == "string" then
+        return string.format("%q", V)
+    elseif Kind == "number" then
+        if V == math.huge then return "math.huge" end
+        return tostring(V)
+    elseif Kind == "boolean" then
+        return tostring(V)
+    elseif Kind == "Vector3" then
+        return ("Vector3.new(%s,%s,%s)"):format(V.X, V.Y, V.Z)
+    elseif Kind == "table" then
+        local Parts = {}
+
+        for I = 1, #V do
+            table.insert(Parts, SerializeValue(V[I]))
+        end
+
+        for K, Val in pairs(V) do
+            if type(K) == "string" and K ~= "__User" then
+                table.insert(Parts, ("[%q]=%s"):format(K, SerializeValue(Val)))
+            end
+        end
+
+        return "{" .. table.concat(Parts, ",") .. "}"
+    end
+
+    return "nil"
+end
+
+local VisitedFile = "mining_visited.json"
+
+local function GetVisited()
+    local Visited = rawget(getgenv(), "MiningVisited")
+
+    if type(Visited) ~= "table" then
+        Visited = {}
+
+        pcall(function()
+            if isfile and isfile(VisitedFile) then
+                for JobId, At in pairs(HttpService:JSONDecode(readfile(VisitedFile))) do
+                    if os.time() - tonumber(At) < 3600 then Visited[JobId] = tonumber(At) end
+                end
+            end
+        end)
+
+        getgenv().MiningVisited = Visited
+    end
+
+    Visited[game.JobId] = Visited[game.JobId] or os.time()
+
+    return Visited
+end
+
+local function SaveVisited(Visited)
+    pcall(function()
+        if writefile then writefile(VisitedFile, HttpService:JSONEncode(Visited)) end
+    end)
+end
+
+-- Server hop sonrasi script'in tekrar baslamasi icin queue_on_teleport'a yukleyici koy
+function Mining.QueueReload()
+    if Mining.ReloadQueued then return end
+
+    local Queue = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+    local Url = Settings.HopScriptURL
+
+    if not Queue then
+        warn("[Hop] queue_on_teleport yok. Hop sonrasi script'in calismasi icin executor'in autoexec klasorune loadstring'i koy.")
+        return
+    end
+
+    if type(Url) ~= "string" or Url == "" then
+        warn("[Hop] HopScriptURL ayarli degil: hop sonrasi script kendiliginden baslamaz. Config'e HopScriptURL = \"https://raw.githubusercontent.com/...\" ekle (veya autoexec kullan).")
+        return
+    end
+
+    local Code = "getgenv().Settings = " .. SerializeValue(Settings.__User or {}) ..
+        "\nloadstring(game:HttpGet(" .. string.format("%q", Url) .. "))()"
+
+    local Ok, Err = pcall(Queue, Code)
+
+    if Ok then
+        Mining.ReloadQueued = true
+        print("[Hop] hop sonrasi script otomatik yeniden yuklenecek.")
+    else
+        warn("[Hop] queue_on_teleport hatasi: " .. tostring(Err))
+    end
+end
+
+function Mining.FetchServers()
+    local List = {}
+    local Cursor = ""
+
+    for _ = 1, 3 do
+        local Order = (tonumber(Settings.HopMinPlayers) or 1) > 1 and "Desc" or "Asc"
+        local Url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&excludeFullGames=true&limit=100%s"):format(
+            game.PlaceId, Order, Cursor ~= "" and ("&cursor=" .. Cursor) or "")
+
+        local Ok, Body = pcall(function() return game:HttpGet(Url) end)
+
+        if not Ok then
+            warn("[Hop] server listesi alinamadi: " .. tostring(Body))
+            break
+        end
+
+        local DecodeOk, Data = pcall(function() return HttpService:JSONDecode(Body) end)
+
+        if not DecodeOk or type(Data) ~= "table" then break end
+
+        if Data.errors then
+            warn("[Hop] server listesi hatasi (rate limit olabilir), biraz bekleniyor.")
+            break
+        end
+
+        for _, Server in ipairs(Data.data or {}) do
+            table.insert(List, Server)
+        end
+
+        if not Data.nextPageCursor then break end
+
+        Cursor = Data.nextPageCursor
+        task.wait(0.6)
+    end
+
+    return List
+end
+
+function Mining.ServerHop(Reason)
+    if Mining.Hopping then return end
+
+    Mining.Hopping = true
+    Mining.Status = "Server hop: " .. tostring(Reason)
+    print("[Hop] server degistiriliyor: " .. tostring(Reason))
+
+    Mining.QueueReload()
+
+    task.spawn(function()
+        local Visited = GetVisited()
+
+        for Attempt = 1, 12 do
+            if not IsCurrentRun() then return end
+
+            local Candidates = {}
+            local Relaxed = {}
+            local MinPlayers = tonumber(Settings.HopMinPlayers) or 5
+
+            for _, Server in ipairs(Mining.FetchServers()) do
+                if Server.id ~= game.JobId and not Visited[Server.id] and
+                    tonumber(Server.playing) and tonumber(Server.maxPlayers) and
+                    Server.playing < Server.maxPlayers - 1 then
+                    if Server.playing >= MinPlayers then
+                        table.insert(Candidates, Server)
+                    else
+                        table.insert(Relaxed, Server)
+                    end
+                end
+            end
+
+            -- yeterince kalabalik server yoksa en kalabaliklara don (bos server'a dusme)
+            if #Candidates == 0 and Attempt >= 3 and #Relaxed > 0 then
+                table.sort(Relaxed, function(a, b) return a.playing > b.playing end)
+
+                for Index = 1, math.min(5, #Relaxed) do
+                    if Relaxed[Index].playing >= 2 then table.insert(Candidates, Relaxed[Index]) end
+                end
+            end
+
+            if #Candidates == 0 then
+                warn(("[Hop] en az %d oyunculu uygun server bulunamadi (deneme %d/12), 10 sn sonra tekrar."):format(MinPlayers, Attempt))
+                task.wait(10)
+            else
+                local Pick = Candidates[math.random(1, #Candidates)]
+
+                Visited[Pick.id] = os.time()
+                SaveVisited(Visited)
+
+                print(("[Hop] server'a geciliyor: %s (%s/%s oyuncu) deneme %d/12"):format(
+                    Pick.id, tostring(Pick.playing), tostring(Pick.maxPlayers), Attempt))
+
+                local Failed = false
+                local Conn = TeleportService.TeleportInitFailed:Connect(function(_, _, Message)
+                    Failed = true
+                    warn("[Hop] teleport hatasi: " .. tostring(Message))
+                end)
+
+                pcall(function()
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, Pick.id, LocalPlayer)
+                end)
+
+                local Until = os.clock() + 25
+
+                repeat task.wait(0.5) until Failed or os.clock() > Until or not IsCurrentRun()
+
+                Conn:Disconnect()
+            end
+        end
+
+        -- teleport hic olmadi: bir sure normal farma don
+        warn("[Hop] server degistirilemedi; 2 dk sonra tekrar denenecek.")
+        Mining.Hopping = false
+        Mining.HopCooldownUntil = os.clock() + 120
+    end)
+end
+
+-- Ayardaki isimleri (id / gorunen isim) blok id'sine cevir
+function Mining.ResolveList(List)
+    local Out = {}
+
+    for _, Entry in ipairs(List) do
+        local Wanted = tostring(Entry)
+        local Key = Wanted:lower()
+        local Catalog, Lookup = Mining.OreCatalog, Mining.OreLookup
+        local Id = Catalog and (Catalog[Wanted] and Wanted or Lookup[Key] or Lookup[(Key:gsub("%s*ore$", ""))])
+
+        table.insert(Out, Id or (Wanted:sub(1, 1):upper() .. Wanted:sub(2)))
+    end
+
+    return Out
+end
+
+-- Haritadaki (radius icindeki) nadir sayisi; Only = {id=true} verilirse sadece onlar. nil = harita henuz hazir degil
+function Mining.CountHopOres(Only)
+    if not World then return nil end
+
+    local WorldId = World.Id
+
+    if not Mining.OreMap or Mining.OreMapWorldId ~= WorldId then
+        local Map = Mining.ScanOreMap()
+
+        if not Map then
+            Mining.HopScanMisses = (Mining.HopScanMisses or 0) + 1
+            return nil
+        end
+
+        Mining.OreMap = Map
+        Mining.OreMapWorldId = WorldId
+        Mining.HopScanMisses = 0
+    end
+
+    local Radius = tonumber(Settings.HopRadius)
+    local Count = 0
+
+    for Index = #Mining.OreMap, 1, -1 do
+        local Ore = Mining.OreMap[Index]
+        local FailUntil = Mining.FailedPositions[tostring(Ore.Pos)]
+
+        if not Mining.IsBlockAlive(Ore.Pos, Ore.Id) then
+            table.remove(Mining.OreMap, Index)
+        elseif FailUntil and FailUntil > os.clock() then
+            -- kirilamayan / ulasilamayan nadir: sayma
+        elseif not Only or Only[Ore.Id] then
+            local Inside = true
+
+            if Radius and Mining.HopOrigin then
+                local Ok, Pos = pcall(Mining.GridToWorld, Ore.Pos.X, Ore.Pos.Y, Ore.Pos.Z)
+
+                if Ok and typeof(Pos) == "Vector3" then
+                    Inside = (Pos - Mining.HopOrigin).Magnitude <= Radius
+                end
+            end
+
+            if Inside then Count += 1 end
+        end
+    end
+
+    return Count
+end
+
+local function HopWhy(Text)
+    if Mining.HopWhyText ~= Text or os.clock() - (Mining.HopWhyAt or 0) >= 15 then
+        Mining.HopWhyText = Text
+        Mining.HopWhyAt = os.clock()
+        print("[Hop] durum: " .. Text)
+    end
+end
+
+function Mining.HopStep()
+    if Settings.ServerHop ~= true or Mining.Hopping then return end
+
+    -- karar verilene kadar sik, sonra seyrek kontrol
+    if os.clock() - (Mining.HopEvalAt or 0) < (Mining.HopPending and 0.5 or 2) then return end
+
+    Mining.HopEvalAt = os.clock()
+
+    if Mining.HopPending == nil then
+        Mining.HopPending = true -- ilk karar verilene kadar farm yok
+        Mining.HopPendingSince = os.clock()
+    end
+
+    if not World then return HopWhy("world yok") end
+    if not Mining.Ready then return HopWhy("mine'a girilmesi bekleniyor") end
+    if not Mining.ZoneAttempted then return HopWhy("zone gecisi bekleniyor") end
+    if os.clock() < (Mining.HopCooldownUntil or 0) then return HopWhy("hop bekleme suresinde") end
+    if os.clock() - (Mining.EnteredAt or os.clock()) < (Settings.HopMinSeconds or 3) then return HopWhy("world yukleniyor") end
+    if Mining.IsMineResetting() then return HopWhy("mine resetleniyor") end
+
+    if not Mining.HopTargets then
+        Mining.HopTargets = Mining.ResolveList(Settings.HopOres or {"Rainbow", "Amethyst", "Emerald"})
+        Mining.HopRequire = {}
+
+        for _, Id in ipairs(Mining.ResolveList(Settings.HopRequire or Settings.HopOres or {"Rainbow", "Amethyst", "Emerald"})) do
+            Mining.HopRequire[Id] = true
+        end
+
+        local Names = {}
+        for Id in pairs(Mining.HopRequire) do table.insert(Names, Id) end
+        table.sort(Names)
+
+        print(("[Hop] kirilacak nadirler: %s | server'da kalmak icin gerekli: %s"):format(
+            table.concat(Mining.HopTargets, ", "), table.concat(Names, ", ")))
+    end
+
+    -- sadece hedef nadirleri kir
+    Mining.SetPriority(Mining.HopTargets)
+
+    local Count = Mining.CountHopOres(Mining.HopRequire)
+
+    if Count == nil then
+        HopWhy(("harita okunuyor (%d)"):format(Mining.HopScanMisses or 0))
+
+        if (Mining.HopScanMisses or 0) >= 20 then
+            warn("[Hop] harita okunamiyor; server hop kapatildi.")
+            Settings.ServerHop = false
+            Mining.HopPending = false
+            Mining.SetPriority(nil)
+        end
+
+        return
+    end
+
+    local Needed = Mining.HopMineStart and 1 or math.max(1, Settings.HopMinOres or 1)
+
+    if Count >= Needed then
+        if Mining.HopPending then
+            print(("[Hop] %d gerekli nadir var -> bu server'da kaziliyor."):format(Count))
+        end
+
+        Mining.HopPending = false
+        Mining.HopZeroSince = nil
+        Mining.HopMineStart = Mining.HopMineStart or os.clock()
+        Mining.Status = ("Hop modu: %d nadir kaziliyor"):format(Count)
+        HopWhy(Mining.Status)
+
+        -- sayi bir sure azalmiyorsa (kirilamayan / ulasilamayan nadir) beklemeden hop at
+        if Count ~= Mining.HopLastCount then
+            Mining.HopLastCount = Count
+            Mining.HopLastChangeAt = os.clock()
+        end
+
+        if os.clock() - (Mining.HopLastChangeAt or os.clock()) > (Settings.HopStallSeconds or 20) then
+            Mining.ServerHop(("kalan %d nadir kirilamiyor (%d sn ilerleme yok)"):format(Count, Settings.HopStallSeconds or 20))
+        elseif os.clock() - Mining.HopMineStart > (Settings.HopMaxMineSeconds or 120) then
+            Mining.ServerHop("nadirlere ulasilamadi (zaman asimi)")
+        end
+
+        return
+    end
+
+    -- nadir yok: harita yeni yuklenmis olabilir; kisa sure tekrar tarayip dogrula
+    Mining.HopZeroSince = Mining.HopZeroSince or os.clock()
+    Mining.OreMap = nil -- sonraki kontrolde yeniden taransin
+    Mining.Status = "Hop modu: nadir yok"
+
+    if os.clock() - Mining.HopZeroSince >= (Settings.HopVerifySeconds or 2.5) then
+        Mining.ServerHop(Mining.HopMineStart and "nadirler bitti" or "haritada nadir yok")
+    else
+        HopWhy("nadir yok, dogrulaniyor")
     end
 end
 
@@ -5830,9 +6898,31 @@ while task.wait() and IsCurrentRun() do
         Mining.SetPriority(nil)
     end
 
+    local HopOk, HopErr = pcall(Mining.HopStep)
+
+    if not HopOk then
+        warn("[Hop] hata: " .. tostring(HopErr))
+    end
+
+    if Mining.Hopping then
+        task.wait(1)
+        continue
+    end
+
     if not Mining.EnsureInMine() then
         task.wait(0.5)
         continue
+    end
+
+    -- server hop: ilk karar (nadir var mi?) verilene kadar hicbir sey kirma
+    if Settings.ServerHop == true and Mining.HopPending ~= false then
+        if Mining.HopPending and Mining.EnteredAt and os.clock() - Mining.EnteredAt > 60 then
+            warn("[Hop] 60 sn icinde karar verilemedi; normal farma geciliyor.")
+            Mining.HopPending = false
+        else
+            task.wait(0.25)
+            continue
+        end
     end
 
     local MineOk, MineErr = pcall(Mining.OreMining)
@@ -5863,6 +6953,8 @@ while task.wait() and IsCurrentRun() do
         Mining.NeedOpening = false
         Mining.OreMap = nil
         Mining.OreMapFailed = false
+    Mining.OreMapMisses = 0
+    Mining.OreMapRetryAt = 0
         Mining.YStep = nil
         Mining.RegionCache = nil
 
@@ -5893,5 +6985,17 @@ while task.wait() and IsCurrentRun() do
         end
 
         repeat task.wait(0.5) until not Mining.IsMineResetting()
+
+        -- server hop modunda: yeni mine'i bastan degerlendir (nadir var mi? yoksa hop)
+        if Settings.ServerHop == true then
+            Mining.HopPending = true
+            Mining.HopMineStart = nil
+            Mining.HopLastCount = nil
+            Mining.HopZeroSince = nil
+            Mining.OreMap = nil
+            Mining.EnteredAt = os.clock() + 2
+            Mining.HopScanMisses = 0
+            print("[Hop] mine resetlendi; yeni harita kontrol ediliyor.")
+        end
     end
 end
