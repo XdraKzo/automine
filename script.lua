@@ -4,6 +4,7 @@ do
 
         -- Mine bolgesinde degilse (olme, instance'tan cikma, world kaybi) otomatik geri isinlan.
         AutoTeleport = true,
+        StartDelay = 6, -- oyun yuklendikten sonra ekstra bekleme (sn); Delta'da erken isinlanmayi onler
         MineInstanceName = "MiningEvent",
         AutoTeleportCheckInterval = 1.5, -- kontrol araligi (sn)
         AutoTeleportCooldown = 3,        -- ust uste isinlanma arasi min sure (sn)
@@ -153,7 +154,7 @@ do
         -- Ores = {"Rainbow", "Amethyst", "Emerald"}, -- hedef nadirler (oncelik sirasiyla). Blok id'si veya gorunen isim
         ResolveOres = true, -- Ores'deki isimleri harita bloklariyla eslestir
         -- SERVER HOP: hedef nadir (Nebulite / Dark Matter) yoksa baska server'a gec
-        ServerHop = true,
+        ServerHop = false,
         HopOres = {"Emerald", "Amethyst", "Rainbow"}, -- kirilacak nadirler (Helium-3, Nebulite, Dark Matter)
         -- HopRequire = {"Amethyst", "Rainbow"}, -- server'da kalmak icin bunlardan en az HopMinOres tane olmali (yoksa HopOres ile ayni)
         HopMinPlayers = 1,       -- hop atilacak server'da en az kac oyuncu olsun (1 = en bos server'lar once)
@@ -288,7 +289,7 @@ end
 
 Debug = Settings.Debug or {}
 
-print(("[Script] surum: hop-v3.6 (24.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
+print(("[Script] surum: hop-v3.9 (24.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
     tostring(Settings.ServerHop), tostring(Settings.OreFarm), tostring(Settings.MineAllBlocks == true),
     table.concat(Settings.BlockPriority, ","), tostring(Settings.HopScriptURL ~= nil)))
 
@@ -333,6 +334,45 @@ until LocalPlayer and LocalPlayer.GetAttribute and LocalPlayer:GetAttribute("__L
 
 if not LocalPlayer.Character then
     LocalPlayer.CharacterAdded:Wait()
+end
+
+-- oyunun yukleme ekrani bitmeden hicbir sey yapma (Delta autoexec'te script cok erken basliyor)
+do
+    local WaitStart = os.clock()
+    local Notified = false
+
+    local function LoadingScreenOpen()
+        local PG = LocalPlayer:FindFirstChild("PlayerGui")
+
+        if not PG then return true end
+
+        for _, Gui in ipairs(PG:GetChildren()) do
+            if Gui:IsA("ScreenGui") and Gui.Enabled and Gui.Name:lower():find("load", 1, true) then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    repeat
+        local Things = workspace:FindFirstChild("__THINGS")
+        local Ready = Things and Things:FindFirstChild("Instances") and LocalPlayer.Character and
+            LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and not LoadingScreenOpen()
+
+        if Ready then break end
+
+        if not Notified and os.clock() - WaitStart > 3 then
+            Notified = true
+            print("[Script] oyun yukleniyor, bitmesi bekleniyor...")
+        end
+
+        task.wait(0.5)
+    until os.clock() - WaitStart > 90
+
+    local Extra = tonumber(Settings.StartDelay) or 6
+
+    if Extra > 0 then task.wait(Extra) end
 end
 
 local Character = LocalPlayer.Character
@@ -919,8 +959,31 @@ function Mining.TeleportToZone(SpecificZone)
         end
     end
 
+    local function WorldDiag(Tag)
+        local InstId, Folders = "?", "?"
+
+        pcall(function()
+            local Cmds = Mining.GetInstancingCmds()
+            if Cmds and Cmds.GetInstanceID then InstId = tostring(Cmds.GetInstanceID()) end
+        end)
+
+        pcall(function()
+            local BW = workspace.__THINGS:FindFirstChild("BlockWorlds")
+            local Names = {}
+            for _, C in ipairs(BW and BW:GetChildren() or {}) do table.insert(Names, C.Name) end
+            Folders = #Names > 0 and table.concat(Names, ",") or "(bos)"
+        end)
+
+        local Client = Mining.GetBlockWorldClient()
+        local Pos = HumanoidRootPart and HumanoidRootPart.Position
+
+        print(("[Teleport] %s | instance=%s | BlockWorldClient=%s | BlockWorlds=%s | konum=%s"):format(
+            Tag, InstId, tostring(Client ~= nil), Folders, Pos and ("%.0f,%.0f,%.0f"):format(Pos.X, Pos.Y, Pos.Z) or "?"))
+    end
+
     local function WaitForWorld(Timeout, RequireZone)
         local TimeoutAt = os.clock() + Timeout
+        local LastDiag = os.clock()
 
         repeat
             if not IsCurrentRun() then return false end
@@ -932,8 +995,15 @@ function Mining.TeleportToZone(SpecificZone)
                 return true
             end
 
+            if os.clock() - LastDiag >= 5 then
+                LastDiag = os.clock()
+                WorldDiag("world bekleniyor")
+            end
+
             task.wait(0.5)
         until os.clock() >= TimeoutAt
+
+        WorldDiag("world beklemesi bitti (aktif world yok)")
 
         return false
     end
@@ -6502,28 +6572,68 @@ function Mining.QueueReload()
     end
 end
 
+-- Executor'a gore calisan HTTP yontemini bul (request / HttpGet, roblox.com / roproxy.com)
+function Mining.HttpGetAny(Path)
+    local Hosts = {"games.roblox.com", "games.roproxy.com"}
+    local Req = request or http_request or (syn and syn.request) or (fluxus and fluxus.request)
+    local Errors = {}
+
+    for _, Host in ipairs(Hosts) do
+        local Url = "https://" .. Host .. Path
+
+        if Req then
+            local Ok, Res = pcall(Req, {Url = Url, Method = "GET", Headers = {["Accept"] = "application/json"}})
+
+            if Ok and type(Res) == "table" and type(Res.Body) == "string" and Res.Body ~= "" and
+                (Res.StatusCode == nil or Res.StatusCode == 200) then
+                return Res.Body, Host .. " (request)"
+            end
+
+            table.insert(Errors, ("%s request: %s"):format(Host, Ok and tostring(type(Res) == "table" and Res.StatusCode or Res) or tostring(Res)))
+        end
+
+        local Ok, Body = pcall(function() return game:HttpGet(Url) end)
+
+        if Ok and type(Body) == "string" and Body ~= "" then
+            return Body, Host .. " (HttpGet)"
+        end
+
+        table.insert(Errors, ("%s HttpGet: %s"):format(Host, tostring(Body)))
+    end
+
+    return nil, table.concat(Errors, " | ")
+end
+
 function Mining.FetchServers()
     local List = {}
     local Cursor = ""
 
-    for _ = 1, 3 do
+    for Page = 1, 3 do
         local Order = (tonumber(Settings.HopMinPlayers) or 1) > 1 and "Desc" or "Asc"
-        local Url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&excludeFullGames=true&limit=100%s"):format(
+        local Path = ("/v1/games/%d/servers/Public?sortOrder=%s&excludeFullGames=true&limit=100%s"):format(
             game.PlaceId, Order, Cursor ~= "" and ("&cursor=" .. Cursor) or "")
 
-        local Ok, Body = pcall(function() return game:HttpGet(Url) end)
+        local Body, Info = Mining.HttpGetAny(Path)
 
-        if not Ok then
-            warn("[Hop] server listesi alinamadi: " .. tostring(Body))
+        if not Body then
+            warn("[Hop] server listesi alinamadi: " .. tostring(Info))
             break
+        end
+
+        if Mining.FetchSource ~= Info then
+            Mining.FetchSource = Info
+            print("[Hop] server listesi kaynagi: " .. tostring(Info))
         end
 
         local DecodeOk, Data = pcall(function() return HttpService:JSONDecode(Body) end)
 
-        if not DecodeOk or type(Data) ~= "table" then break end
+        if not DecodeOk or type(Data) ~= "table" then
+            warn("[Hop] server listesi okunamadi (JSON hatasi).")
+            break
+        end
 
         if Data.errors then
-            warn("[Hop] server listesi hatasi (rate limit olabilir), biraz bekleniyor.")
+            warn("[Hop] server listesi hatasi (rate limit olabilir): " .. tostring(Data.errors[1] and Data.errors[1].message or "?"))
             break
         end
 
@@ -6558,8 +6668,29 @@ function Mining.ServerHop(Reason)
             local Candidates = {}
             local Relaxed = {}
             local MinPlayers = tonumber(Settings.HopMinPlayers) or 5
+            local ServerList = Mining.FetchServers()
 
-            for _, Server in ipairs(Mining.FetchServers()) do
+            -- server listesi hic alinamiyorsa (executor HTTP'yi engelliyor) Roblox'un kendi rastgele server secimine birak
+            if #ServerList == 0 and Attempt >= 2 then
+                print(("[Hop] liste yok -> TeleportService:Teleport ile rastgele server (deneme %d/12)"):format(Attempt))
+
+                local Failed = false
+                local Conn = TeleportService.TeleportInitFailed:Connect(function(_, _, Message)
+                    Failed = true
+                    warn("[Hop] teleport hatasi: " .. tostring(Message))
+                end)
+
+                pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
+
+                local Until = os.clock() + 25
+
+                repeat task.wait(0.5) until Failed or os.clock() > Until or not IsCurrentRun()
+
+                Conn:Disconnect()
+                continue
+            end
+
+            for _, Server in ipairs(ServerList) do
                 if Server.id ~= game.JobId and not Visited[Server.id] and
                     tonumber(Server.playing) and tonumber(Server.maxPlayers) and
                     Server.playing < Server.maxPlayers - 1 then
