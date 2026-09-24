@@ -154,12 +154,13 @@ do
         -- Ores = {"Rainbow", "Amethyst", "Emerald"}, -- hedef nadirler (oncelik sirasiyla). Blok id'si veya gorunen isim
         ResolveOres = true, -- Ores'deki isimleri harita bloklariyla eslestir
         -- SERVER HOP: hedef nadir (Nebulite / Dark Matter) yoksa baska server'a gec
-        ServerHop = true,
+        ServerHop = false,
         HopOres = {"Emerald", "Amethyst", "Rainbow"}, -- kirilacak nadirler (Helium-3, Nebulite, Dark Matter)
         -- HopRequire = {"Amethyst", "Rainbow"}, -- server'da kalmak icin bunlardan en az HopMinOres tane olmali (yoksa HopOres ile ayni)
         HopMinPlayers = 1,       -- hop atilacak server'da en az kac oyuncu olsun (1 = en bos server'lar once)
         HopMinOres = 1,          -- server'a girince en az bu kadar nadir yoksa hemen hop at; varsa hepsi bitene kadar kaz
         HopMinSeconds = 3,       -- world yuklendikten sonra karar vermeden once bekleme
+        HopWatchdogSeconds = 60, -- hop modunda bu kadar sn hicbir sey kirilmazsa (takildiysa) zorla hop at
         HopStallSeconds = 20,    -- kalan nadir sayisi bu kadar sn degismezse (kirilamiyorsa) hop at
         HopVerifySeconds = 1.5,  -- "nadir yok" sonucunu dogrulama suresi
         HopMaxMineSeconds = 120, -- bir server'da en fazla kazma suresi
@@ -289,7 +290,7 @@ end
 
 Debug = Settings.Debug or {}
 
-print(("[Script] surum: hop-v3.9 (24.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
+print(("[Script] surum: hop-v3.10 (24.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
     tostring(Settings.ServerHop), tostring(Settings.OreFarm), tostring(Settings.MineAllBlocks == true),
     table.concat(Settings.BlockPriority, ","), tostring(Settings.HopScriptURL ~= nil)))
 
@@ -6979,6 +6980,29 @@ if Settings.AutoUnstuck ~= false then
             if not Mining.UnstickRequested and Mining.Ready ~= false and
                 os.clock() - (Mining.LastProgressAt or os.clock()) > (Settings.StuckSeconds or 30) then
                 Mining.UnstickRequested = true
+            end
+        end
+    end)
+end
+
+-- SERVER HOP BEKCISI: ana dongu takilsa / hicbir sey kirilamasa bile belli sure sonra hop at
+if Settings.ServerHop == true then
+    task.spawn(function()
+        local Limit = tonumber(Settings.HopWatchdogSeconds) or 60
+
+        while IsCurrentRun() do
+            task.wait(5)
+
+            if Settings.ServerHop == true and not Mining.Hopping and Mining.Ready and
+                os.clock() >= (Mining.HopCooldownUntil or 0) then
+                local Last = math.max(Mining.LastProgressAt or 0, Mining.EnteredAt or 0)
+                local Idle = os.clock() - Last
+
+                if Idle > Limit then
+                    warn(("[Hop] bekci: %d sn'dir ilerleme yok (durum: %s) -> server hop"):format(
+                        math.floor(Idle), tostring(Mining.Status)))
+                    Mining.ServerHop("takildi (bekci)")
+                end
             end
         end
     end)
