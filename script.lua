@@ -158,7 +158,7 @@ do
         HopOres = {"Emerald", "Amethyst", "Rainbow"}, -- kirilacak nadirler (Helium-3, Nebulite, Dark Matter)
         -- HopRequire = {"Amethyst", "Rainbow"}, -- server'da kalmak icin bunlardan en az HopMinOres tane olmali (yoksa HopOres ile ayni)
         HopMinPlayers = 1,       -- hop atilacak server'da en az kac oyuncu olsun (1 = en bos server'lar once)
-        HopMinOres = 1,          -- server'a girince en az bu kadar nadir yoksa hemen hop at; varsa hepsi bitene kadar kaz
+        HopMinOres = 5,          -- server'a girince en az bu kadar nadir yoksa hemen hop at; varsa hepsi bitene kadar kaz
         HopMinSeconds = 3,       -- world yuklendikten sonra karar vermeden once bekleme
         HopWatchdogSeconds = 60, -- hop modunda bu kadar sn hicbir sey kirilmazsa (takildiysa) zorla hop at
         HopStallSeconds = 20,    -- kalan nadir sayisi bu kadar sn degismezse (kirilamiyorsa) hop at
