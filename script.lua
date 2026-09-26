@@ -173,7 +173,7 @@ do
         -- Height used while standing above the active mining layer.
         -- KOLAY AYARLAR
         OreFarm = true,     -- true: asagidaki Ores listesindeki nadirleri hedefle (hedefli kazi)
-        NormalFarm = true, -- true: nadirin yaninda NORMAL bloklari da kir (her blok). false: sadece nadire ulasmak icin gereken kazi
+        NormalFarm = true, -- true: haritada hedef nadir KALMAYINCA normal farm (tum bloklar); nadir cikinca tekrar nadire gider
         -- Ores = {"Rainbow", "Amethyst", "Emerald"}, -- hedef nadirler (oncelik sirasiyla). Blok id'si veya gorunen isim
         ResolveOres = true, -- Ores'deki isimleri harita bloklariyla eslestir
         -- SERVER HOP: hedef nadir (Nebulite / Dark Matter) yoksa baska server'a gec
@@ -181,7 +181,7 @@ do
         HopOres = {"Quartz", "Topaz"}, -- Dark Matter, Starlight Quartz, Sunstone
         -- HopRequire = {"Amethyst", "Rainbow"}, -- server'da kalmak icin bunlardan en az HopMinOres tane olmali (yoksa HopOres ile ayni)
         HopMinPlayers = 7,       -- hop atilacak server'da en az kac oyuncu olsun (1 = en bos server'lar once)
-        HopMinOres = 10,          -- server'a girince en az bu kadar nadir yoksa hemen hop at; varsa hepsi bitene kadar kaz
+        HopMinOres = 10,         -- server'a girince en az bu kadar nadir yoksa hemen hop at; varsa hepsi bitene kadar kaz
         HopMinSeconds = 3,       -- world yuklendikten sonra karar vermeden once bekleme
         HopWatchdogSeconds = 60, -- hop modunda bu kadar sn hicbir sey kirilmazsa (takildiysa) zorla hop at
         HopStallSeconds = 20,    -- kalan nadir sayisi bu kadar sn degismezse (kirilamiyorsa) hop at
@@ -208,7 +208,7 @@ do
         -- The script matches these values against Block.Dir._id exactly.
         -- When MineAllBlocks is false, this is the target whitelist.
         BlockPriority = {
-            "Rainbow", -- Dark Matter
+             -- Dark Matter
             "Quartz",  -- Starlight Quartz
             "Topaz",   -- Sunstone
         },
@@ -311,7 +311,7 @@ end
 
 Debug = Settings.Debug or {}
 
-print(("[Script] surum: hop-v3.19 (26.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
+print(("[Script] surum: hop-v3.34 (26.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
     tostring(Settings.ServerHop), tostring(Settings.OreFarm), tostring(Settings.MineAllBlocks == true),
     table.concat(Settings.BlockPriority, ","), tostring(Settings.HopScriptURL ~= nil)))
 
@@ -437,11 +437,36 @@ if Settings.AntiAFK ~= false then
 
     getgenv().MiningAntiAfkConn = LocalPlayer.Idled:Connect(AntiAfkPulse)
 
+    -- PS99'un kendi "Idle Tracking" scripti (AFK sayacini) kapat + sayaci durdur
+    local function StopGameIdle()
+        pcall(function()
+            local Core = PlayerScripts:FindFirstChild("Core")
+            local Idle = Core and Core:FindFirstChild("Idle Tracking")
+            if Idle then Idle.Enabled = false end
+        end)
+
+        pcall(function()
+            local Net = Library.Network or Mining.GetNetwork()
+            if Net and Net.Fire then Net.Fire("Idle Tracking: Stop Timer") end
+        end)
+    end
+
+    StopGameIdle()
+
     -- yedek: periyodik hareket sinyali
     task.spawn(function()
         while IsCurrentRun() do
             task.wait(Settings.AntiAFKInterval or 60)
             AntiAfkPulse()
+            StopGameIdle()
+
+            -- yedek: cok kucuk kamera hareketi (Roblox 20 dk atma sayacini sifirlar)
+            pcall(function()
+                local VIM = game:GetService("VirtualInputManager")
+                VIM:SendMouseMoveEvent(10, 10, game)
+                task.wait(0.05)
+                VIM:SendMouseMoveEvent(12, 12, game)
+            end)
         end
     end)
 
@@ -4069,6 +4094,26 @@ function Mining.TunnelStep()
     end
 
     if not Best then
+        -- hedef nadir yok: NormalFarm aciksa normal farm (tum bloklari kir); arada haritayi yeniden tara
+        if Settings.NormalFarm == true then
+            if os.clock() - (Mining.OreMapAt or 0) > 10 then Mining.OreMap = nil end
+
+            if not Mining.NormalFarmAnnounced then
+                Mining.NormalFarmAnnounced = true
+                print("[Farm] hedef nadir kalmadi -> normal farm (tum bloklar). Nadir cikinca ona gidilecek.")
+            end
+
+            local Ok, Err = pcall(Mining.ClearStep)
+
+            if not Ok then
+                warn("[Farm] normal farm hatasi: " .. tostring(Err))
+                task.wait(0.5)
+            end
+
+            Mining.Status = "Nadir yok: normal farm"
+            return true
+        end
+
         -- haritadaki hedefler bitti: mine reset'ini bekle (arada yeniden tara)
         Mining.Status = ("Hedef nadir kalmadi (%d); mine reset bekleniyor"):format(#Map)
         Mining.LastProgressAt = os.clock()
@@ -4084,6 +4129,8 @@ function Mining.TunnelStep()
         task.wait(1)
         return true
     end
+
+    Mining.NormalFarmAnnounced = nil
 
     Mining.Status = ("Tunel: %s (kalan %d)"):format(tostring(Mining.OreNames and Mining.OreNames[Best.Id] or Best.Id), #Map)
 
