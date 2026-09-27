@@ -34,6 +34,15 @@ do
         AntiStuck = true,
         -- 3 dk icinde 3 kez takilirsa: ServerHop aciksa hop, degilse karakteri resetle.
         UnstuckEscalate = true,
+        -- 8 SAAT MODU: bu kadar sn HIC blok kirilamazsa (her sey denendi, hala takili) oyuna yeniden baglan.
+        -- Yeniden baglaninca script autoexec'ten tekrar baslar. 0 / false = kapali.
+        StuckRejoinSeconds = 300,
+        -- Bir nadir bu kadar kez kirilamazsa o mine resetlenene kadar bir daha denenmez (sonsuz takilmayi onler).
+        OreMaxFails = 2,
+        -- Tek bir kazma adimi bu kadar sn'den uzun surerse iptal edilir (donma korumasi).
+        StepTimeout = 60,
+        -- Blok bundan uzaksa ve kirilmadiysa blogun hemen yanina isinlanip tekrar vurur.
+        CloseRange = 10,
 
         -- Anti-AFK: Roblox'un 20 dk bosta atma sistemini engeller.
         -- CPU TASARRUFU: birden fazla Roblox acikken islemci/RAM yukunu dusurur
@@ -92,7 +101,7 @@ do
         -- Sadece EKRANDA GORUNEN ismi bu kelimelerden birini iceren esyalar gosterilir
         -- (ID'ye bakilmaz; eski etkinlik gemleri boylece elenir). Panelde bu sirayla dizilir.
         -- {} birakirsan asagidaki GUIGemMatch / GUIGemIDs kurali kullanilir.
-        GUIGemNames = {"Moonstone", "Star Ruby", "Helium-3", "Nebulite", "Dark Matter"},
+        GUIGemNames = {"Onyx", "Sunstone", "Quartz", "Moonstone", "Star Ruby", "Helium-3", "Nebulite", "Dark Matter"},
         GUIGemIDs = nil,
         GUIGemMatch = "gem",
 
@@ -127,7 +136,11 @@ do
         TunnelSettle = 0.15,   -- isinlandiktan sonra sunucunun yeni konumu gormesi icin bekleme (sn)
         TunnelMaxCells = 4000, -- tunel ararken bakilacak en fazla hucre
         -- Bu kelimeleri ID'sinde iceren bloklar HIC kirilmaz (hedef de yapilmaz). {} = kapali.
-        NeverBreak = {"Chest"},
+        NeverBreak = {"Chest"}, -- sandiklar kirilmaz; kirilsin istersen {} yap
+        -- YAVAS BLOKLAR: ID'sinde bu kelimeler gecen bloklar tek vurusta kirilmaz; hedef verilip kirilana kadar beklenir.
+        SlowBlocks = {"Chest"},
+        SlowBlockWait = 2.5,    -- ilk bekleme (sn); kirilmazsa kendiliginden artar
+        SlowBlockMaxWait = 7,   -- en fazla bekleme (sn)
         -- 0 = kirilana kadar sonsuza dek bekle. >0: bu kadar saniye sonra vazgec.
         PersistentMaxSeconds = 25,
         -- Her basarisiz turda bekleme suresi artar, en fazla bu kadar sn ekstra beklenir.
@@ -174,6 +187,10 @@ do
         -- KOLAY AYARLAR
         OreFarm = true,     -- true: asagidaki Ores listesindeki nadirleri hedefle (hedefli kazi)
         NormalFarm = true, -- true: haritada hedef nadir KALMAYINCA normal farm (tum bloklar); nadir cikinca tekrar nadire gider
+        -- Normal farm nasil yapilsin: "tunel" = asagi dogru tek blokluk tuneller kazar (etraftaki nadirleri acar, gorunce kirar)
+        -- "katman" = eski usul, durdugu yerde katman katman her seyi kirar
+        NormalFarmMode = "tunel",
+        TunnelSpacing = 3, -- tuneller arasi mesafe (blok). 3 = yan yana tuneller ayni bloklari acmaz
         -- Ores = {"Rainbow", "Amethyst", "Emerald"}, -- hedef nadirler (oncelik sirasiyla). Blok id'si veya gorunen isim
         ResolveOres = true, -- Ores'deki isimleri harita bloklariyla eslestir
         -- SERVER HOP: hedef nadir (Nebulite / Dark Matter) yoksa baska server'a gec
@@ -208,9 +225,10 @@ do
         -- The script matches these values against Block.Dir._id exactly.
         -- When MineAllBlocks is false, this is the target whitelist.
         BlockPriority = {
-             -- Dark Matter
-            "Quartz",  -- Starlight Quartz
-            "Topaz",   -- Sunstone
+            "Quartz",     -- Starlight Quartz
+            "Topaz",      -- Sunstone
+            "Onyx",
+            -- sandik da kirilsin istersen: "EpicChest", "RareChest", "BasicChest" ekle ve NeverBreak'ten "Chest"i sil
         },
 
         -- Leave false for the normal World.Blocks mining path.
@@ -311,7 +329,7 @@ end
 
 Debug = Settings.Debug or {}
 
-print(("[Script] surum: hop-v3.34 (26.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
+print(("[Script] surum: hop-v3.42 (27.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
     tostring(Settings.ServerHop), tostring(Settings.OreFarm), tostring(Settings.MineAllBlocks == true),
     table.concat(Settings.BlockPriority, ","), tostring(Settings.HopScriptURL ~= nil)))
 
@@ -401,6 +419,9 @@ local Character = LocalPlayer.Character
 local HumanoidRootPart = Character.HumanoidRootPart
 local NLibrary = ReplicatedStorage.Library
 local Library = rawget(getgenv(), "Library")
+
+-- baska bir scriptin yarim biraktigi Library tablosunu kullanma (Network yoksa bozuk sayilir)
+if type(Library) ~= "table" or type(Library.Network) ~= "table" then Library = nil end
 
 if not Library then
     Library = require(NLibrary)
@@ -2059,8 +2080,11 @@ function Mining.BuildSweepPlan()
 end
 
 function Mining.LoadAround(Position)
-    pcall(function()
-        LocalPlayer:RequestStreamAroundAsync(Position, Settings.StreamTimeout or 4)
+    -- arka planda iste: RequestStreamAroundAsync bazen uzun sure takiliyor, kazmayi bekletmesin
+    task.spawn(function()
+        pcall(function()
+            LocalPlayer:RequestStreamAroundAsync(Position, Settings.StreamTimeout or 4)
+        end)
     end)
 end
 
@@ -3199,6 +3223,8 @@ Mining.DrillRecheck = Mining.DrillRecheck or {}
 -- Bilinen ore gorunen isimleri (haritadan / bloktan ogrenilen isim her zaman bunlarin ustundedir)
 Mining.BuiltinOreNames = {
     Rainbow = "Dark Matter Ore", Amethyst = "Nebulite Ore", Emerald = "Helium-3 Ore",
+    Quartz = "Starlight Quartz", Topaz = "Sunstone Ore",
+    BasicChest = "Cargo Crate", RareChest = "Rare Cargo Crate", EpicChest = "Epic Cargo Crate",
     Ruby = "Star Ruby Ore", Sapphire = "Moonstone Ore",
 }
 Mining.DrillStats = Mining.DrillStats or {Ok = 0, Fail = 0, At = os.clock(), Fired = 0}
@@ -3940,9 +3966,30 @@ function Mining.FindTunnel(Start)
 end
 
 -- Tek blogu kir: Target -> kisa bekle -> Break -> kirildigini gorene kadar bekle. Olmazsa beklemeyi artirip tekrar dene.
+-- Yavas blok mu? (sandik vb.: ID'sinde SlowBlocks kelimelerinden biri gecer)
+function Mining.IsSlowBlock(Id)
+    if type(Id) ~= "string" then return false end
+
+    local Lower = Id:lower()
+
+    for _, Word in ipairs(type(Settings.SlowBlocks) == "table" and Settings.SlowBlocks or {}) do
+        if type(Word) == "string" and Word ~= "" and Lower:find(Word:lower(), 1, true) then return true end
+    end
+
+    return false
+end
+
 function Mining.BreakOne(Network, Pos, Id, Block, MaxTries)
     local Base = Settings.TunnelWait or 0.05
     local Confirm = Settings.BreakConfirm or 0.5
+    local Slow = Mining.IsSlowBlock(Id)
+
+    if Slow then
+        -- sandik: hedef ver, kirilana kadar bekle (2-6 sn), sonra Break
+        Base = Settings.SlowBlockWait or 2.5
+        Confirm = 1
+        MaxTries = math.max(MaxTries or 3, 3)
+    end
 
     for Try = 1, MaxTries or 3 do
         if not IsCurrentRun() then return false end
@@ -3953,8 +4000,28 @@ function Mining.BreakOne(Network, Pos, Id, Block, MaxTries)
             Wait += math.max(Mining.GetCachedBreakTime(Block), 0)
         end
 
+        if Slow then
+            -- oyunun hesapladigi kirma suresi mantikliysa onu da dikkate al
+            local Ok, Computed = pcall(Mining.GetCachedBreakTime, Block)
+
+            if Ok and type(Computed) == "number" and Computed > 0 and Computed < 15 then
+                Wait = math.max(Wait, Computed + 0.3)
+            end
+
+            Wait = math.min(Wait, Settings.SlowBlockMaxWait or 7)
+        end
+
         Network.Fire("BlockWorlds_Target", Pos, RemoteCounter, false)
-        task.wait(Wait)
+
+        if Slow then
+            -- bekleme sirasinda kirilirsa hemen devam et
+            local HoldUntil = os.clock() + Wait
+
+            repeat task.wait(0.1) until os.clock() >= HoldUntil or not Mining.IsBlockAlive(Pos, Id)
+        else
+            task.wait(Wait)
+        end
+
         Network.Fire("BlockWorlds_Break", Pos, RemoteCounter)
         RemoteCounter += 1
 
@@ -3969,10 +4036,20 @@ function Mining.BreakOne(Network, Pos, Id, Block, MaxTries)
         -- ilk birkac deneme konsola (sorun olursa ne oldugunu gorelim)
         Mining.TunnelDebug = (Mining.TunnelDebug or 0) + 1
 
-        if Mining.TunnelDebug <= 8 then
+        if Mining.TunnelDebug <= 8 or (not Gone and os.clock() - (Mining.FailPrintAt or 0) >= 30) then
+            if not Gone then Mining.FailPrintAt = os.clock() end
             local W = Block and Block.CFrame and Block.CFrame.Position
             print(("[Tunel] test %d: %s bekleme=%.2f -> %s (mesafe %.0f)"):format(Mining.TunnelDebug, tostring(Id), Wait,
                 Gone and "KIRILDI" or "kirilmadi", W and (HumanoidRootPart.Position - W).Magnitude or -1))
+        end
+
+        if Gone and Slow then
+            -- sandik: bekleme yavasca kisalsin ama cok dusmesin
+            Mining.TunnelWaitById[Id] = math.max(1, Wait - 0.1)
+            Mining.MinedPositions[tostring(Pos)] = true
+            Mining.CountBreak(Block)
+            print(("[Sandik] %s kirildi (%.1f sn)."):format(tostring(Id), Wait))
+            return true
         end
 
         if Gone then
@@ -3982,7 +4059,22 @@ function Mining.BreakOne(Network, Pos, Id, Block, MaxTries)
             return true
         end
 
-        Mining.TunnelWaitById[Id] = math.min(Settings.TunnelMaxWait or 1.5, Wait * 1.6 + 0.05)
+        local W = Block and Block.CFrame and Block.CFrame.Position
+
+        if Slow then
+            Mining.TunnelWaitById[Id] = math.min(Settings.SlowBlockMaxWait or 7, Wait + 1)
+
+            if W and (HumanoidRootPart.Position - W).Magnitude > (Settings.CloseRange or 10) then
+                Mining.MoveToMiningPosition(W + Vector3.new(0, 3, 0))
+                task.wait(Settings.TunnelSettle or 0.15)
+            end
+        elseif W and (HumanoidRootPart.Position - W).Magnitude > (Settings.CloseRange or 10) then
+            -- uzaktan vuruldu (sunucu saymiyor): sure sorunu degil, blogun hemen yanina gec, bekleme artmasin
+            Mining.MoveToMiningPosition(W + Vector3.new(0, 3, 0))
+            task.wait(Settings.TunnelSettle or 0.15)
+        else
+            Mining.TunnelWaitById[Id] = math.min(Settings.TunnelMaxWait or 0.4, Wait * 1.4 + 0.03)
+        end
     end
 
     return false
@@ -4027,6 +4119,23 @@ function Mining.BreakPath(Path)
     end
 
     return true, Broken
+end
+
+-- Nadir kirilamadi: 1 dk atla; OreMaxFails kez olursa bu mine resetlenene kadar hic deneme
+function Mining.MarkOreFailed(Key, Id, Why)
+    if not Key then return end
+
+    Mining.BadOres = Mining.BadOres or {}
+    Mining.OreFails = Mining.OreFails or {}
+    Mining.OreFails[Key] = (Mining.OreFails[Key] or 0) + 1
+
+    if Mining.OreFails[Key] >= (tonumber(Settings.OreMaxFails) or 2) then
+        Mining.BadOres[Key] = true
+        warn(("[Tunel] %s (%s) kirilamiyor -> bu mine resetlenene kadar atlandi."):format(tostring(Id or "?"), tostring(Why)))
+    else
+        Mining.FailedPositions[Key] = os.clock() + 60
+        warn(("[Tunel] %s (%s) -> 1 dk atlandi."):format(tostring(Id or "?"), tostring(Why)))
+    end
 end
 
 function Mining.TunnelStep()
@@ -4074,6 +4183,15 @@ function Mining.TunnelStep()
     local Map = Mining.OreMap
     local Best, BestDist, BestBlock
 
+    -- bu mine'da kirilamadigi kesinlesen nadirler (mine resetlenene kadar atlanir)
+    if Mining.BadOresWorld ~= WorldId then
+        Mining.BadOresWorld = WorldId
+        Mining.BadOres = {}
+        Mining.OreFails = {}
+    end
+
+    local BadOres = Mining.BadOres
+
     for Index = #Map, 1, -1 do
         local Ore = Map[Index]
         local B = Mining.GetLiveBlock(Ore.Pos)
@@ -4083,7 +4201,7 @@ function Mining.TunnelStep()
         else
             local FailUntil = Mining.FailedPositions[tostring(Ore.Pos)]
 
-            if not (FailUntil and FailUntil > os.clock()) then
+            if not (FailUntil and FailUntil > os.clock()) and not BadOres[tostring(Ore.Pos)] then
                 local Dist = (B.CFrame.Position - Root).Magnitude + ((Settings.BlockPriority[Ore.Id] or 1) - 1) * 15
 
                 if not BestDist or Dist < BestDist then
@@ -4103,20 +4221,21 @@ function Mining.TunnelStep()
                 print("[Farm] hedef nadir kalmadi -> normal farm (tum bloklar). Nadir cikinca ona gidilecek.")
             end
 
-            local Ok, Err = pcall(Mining.ClearStep)
+            local Ok, Err = pcall(Settings.NormalFarmMode == "katman" and Mining.ClearStep or Mining.ShaftStep)
 
             if not Ok then
                 warn("[Farm] normal farm hatasi: " .. tostring(Err))
                 task.wait(0.5)
             end
 
-            Mining.Status = "Nadir yok: normal farm"
+            if Settings.NormalFarmMode == "katman" then Mining.Status = "Nadir yok: normal farm" end
             return true
         end
 
         -- haritadaki hedefler bitti: mine reset'ini bekle (arada yeniden tara)
         Mining.Status = ("Hedef nadir kalmadi (%d); mine reset bekleniyor"):format(#Map)
         Mining.LastProgressAt = os.clock()
+        Mining.LastBreakAt = os.clock()
 
         if os.clock() - (Mining.OreMapAt or 0) > 20 then Mining.OreMap = nil end
 
@@ -4136,13 +4255,16 @@ function Mining.TunnelStep()
 
     local Key = tostring(Best.Pos)
 
+    Mining.CurrentTargetKey = Key
+    Mining.CurrentTargetWorld = WorldId
+
     -- gomulu nadir tunel acmadan direkt kirilabiliyor mu? (bir kez test edilir; olursa tunel hic kazilmaz)
     if Mining.DirectMode ~= false then
         Mining.MoveNear(BestBlock.CFrame.Position)
 
         local Network = Mining.GetNetwork()
 
-        if Network and Mining.BreakOne(Network, Best.Pos, Best.Id, BestBlock, Mining.DirectMode and 3 or 2) then
+        if Network and Mining.BreakOne(Network, Best.Pos, Best.Id, BestBlock, 2) then
             if not Mining.DirectMode then
                 Mining.DirectMode = true
                 print("[Tunel] nadirler tunel acmadan direkt kirilabiliyor -> direkt mod (en hizli).")
@@ -4172,8 +4294,7 @@ function Mining.TunnelStep()
     local Path = Mining.FindTunnel(Best.Pos)
 
     if not Path then
-        Mining.FailedPositions[tostring(Best.Pos)] = os.clock() + 60
-        warn(("[Tunel] %s icin yol bulunamadi, atlandi."):format(tostring(Best.Id)))
+        Mining.MarkOreFailed(Key, Best.Id, "yol bulunamadi")
         return true
     end
 
@@ -4192,14 +4313,173 @@ function Mining.TunnelStep()
         Mining.TunnelTries = Mining.TunnelTries or {}
         Mining.TunnelTries[Key] = (Mining.TunnelTries[Key] or 0) + 1
 
-        if Mining.TunnelTries[Key] >= 5 then
+        if Mining.TunnelTries[Key] >= 2 then
             Mining.TunnelTries[Key] = nil
-            Mining.FailedPositions[Key] = os.clock() + 60
-            warn(("[Tunel] %s 5 denemede kirilamadi, 1 dk atlandi."):format(tostring(Best.Id)))
+            Mining.MarkOreFailed(Key, Best.Id, "2 denemede kirilamadi")
         end
     end
 
     return true
+end
+
+----------------------------------------------------------------
+-- NORMAL FARM (TUNEL): hedef nadir yokken asagi dogru tek blokluk tuneller kaz.
+-- Tunelin etrafindaki bloklar acilir; acilan bloklarda hedef nadir gorunurse hemen kirilir.
+-- Sadece yuklu (gorunen) bloklarla calisir, o yuzden haritanin gorunmeyen kismina takilmaz.
+----------------------------------------------------------------
+Mining.ShaftDone = Mining.ShaftDone or {}
+
+function Mining.ResetShafts()
+    Mining.ShaftDone = {}
+    Mining.ShaftCol = nil
+    Mining.ShaftIdle = 0
+    Mining.ShaftFails = 0
+end
+
+function Mining.ShaftStep()
+    local Known = {}
+
+    for _, Block in ipairs(Mining.GetKnownBlocks()) do
+        if not Mining.Unbreakable[Block.Dir._id] then
+            table.insert(Known, Block)
+        end
+    end
+
+    if #Known == 0 then
+        Mining.Status = "Nadir yok: bloklar yukleniyor"
+        HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+        Mining.EnsureSupport(HumanoidRootPart.Position, 16)
+        task.wait(0.5)
+        return
+    end
+
+    local Network = Mining.GetNetwork()
+
+    if not Network then
+        error("[Mining] Could not find the current Network module with a Fire function.")
+    end
+
+    -- 1) tunel kazarken acilan hedef nadir var mi? varsa once onu kir
+    local Root = HumanoidRootPart.Position
+    local Ore, OreDist
+
+    for _, Block in ipairs(Known) do
+        local Id = Block.Dir._id
+        local Key = tostring(Block.Pos)
+
+        if Settings.BlockPriority[Id] and not (Mining.BadOres and Mining.BadOres[Key]) then
+            local D = (Block.CFrame.Position - Root).Magnitude + ((Settings.BlockPriority[Id] or 1) - 1) * 15
+
+            if not OreDist or D < OreDist then Ore, OreDist = Block, D end
+        end
+    end
+
+    if Ore then
+        local Id, Key = Ore.Dir._id, tostring(Ore.Pos)
+
+        Mining.Status = ("Tunel: %s (tunelde bulundu)"):format(tostring(Mining.OreNames and Mining.OreNames[Id] or Id))
+        Mining.CurrentTargetKey = Key
+        Mining.CurrentTargetWorld = World and World.Id
+
+        Mining.MoveNear(Ore.CFrame.Position)
+
+        if Mining.BreakOne(Network, Ore.Pos, Id, Ore, 3) then
+            print(("[Tunel] tunelde %s bulundu ve kirildi."):format(tostring(Mining.OreNames and Mining.OreNames[Id] or Id)))
+        else
+            Mining.MarkOreFailed(Key, Id, "tunelde bulundu ama kirilamadi")
+        end
+
+        return
+    end
+
+    -- 2) tunel sutunu sec (ilk: StandColumn/StandRow hucresi, sonra TunnelSpacing arayla en yakin kazilmamis sutun)
+    local Spacing = math.max(1, tonumber(Settings.TunnelSpacing) or 3)
+    local Col = Mining.ShaftCol
+
+    if not Col or Mining.ShaftDone[Col] then
+        Col = nil
+
+        local Ok, Cx, Cz = pcall(Mining.GetStandCell)
+
+        if not Ok or not Cx then
+            Cx, Cz = Known[1].Pos.X, Known[1].Pos.Z
+        end
+
+        local Best, BestD
+
+        for _, Block in ipairs(Known) do
+            local P = Block.Pos
+
+            if (P.X - Cx) % Spacing == 0 and (P.Z - Cz) % Spacing == 0 then
+                local Key = P.X .. "," .. P.Z
+
+                if not Mining.ShaftDone[Key] then
+                    local W = Block.CFrame.Position
+                    local D = Vector3.new(W.X - Root.X, 0, W.Z - Root.Z).Magnitude
+
+                    if not BestD or D < BestD then Best, BestD = Key, D end
+                end
+            end
+        end
+
+        if not Best then
+            -- bu aralikta kazilacak sutun kalmadi: eski usul katman kazisi
+            Mining.Status = "Nadir yok: katman kaziyor"
+            return Mining.ClearStep()
+        end
+
+        Col = Best
+        Mining.ShaftCol = Col
+        Mining.ShaftIdle = 0
+        Mining.ShaftFails = 0
+        Mining.ShaftCount = (Mining.ShaftCount or 0) + 1
+        print(("[Tunel] yeni tunel #%d: sutun %s"):format(Mining.ShaftCount, Col))
+    end
+
+    -- 3) sutundaki en ust bilinen blok
+    local Top
+
+    for _, Block in ipairs(Known) do
+        if Block.Pos.X .. "," .. Block.Pos.Z == Col then
+            if not Top or Block.CFrame.Position.Y > Top.CFrame.Position.Y then Top = Block end
+        end
+    end
+
+    if not Top then
+        -- alttaki blok henuz gelmedi: kisa bekle, gelmezse tunel bitti
+        Mining.ShaftIdle = (Mining.ShaftIdle or 0) + 1
+
+        if Mining.ShaftIdle >= 8 then
+            Mining.ShaftDone[Col] = true
+            print(("[Tunel] sutun %s dibe ulasti."):format(Col))
+        end
+
+        task.wait(0.1)
+        return
+    end
+
+    Mining.ShaftIdle = 0
+    Mining.Status = ("Nadir yok: tunel #%d kaziyor (Y=%.0f)"):format(Mining.ShaftCount or 1, Top.CFrame.Position.Y)
+
+    -- blogun hemen ustunde dur
+    local Desired = Top.CFrame.Position + Vector3.new(0, Mining.GetStandOffset(Top), 0)
+
+    if (HumanoidRootPart.Position - Desired).Magnitude > 2 then
+        Mining.MoveToMiningPosition(Desired)
+        task.wait(Settings.TunnelSettle or 0.15)
+    end
+
+    if Mining.BreakOne(Network, Top.Pos, Top.Dir._id, Top, 3) then
+        Mining.ShaftFails = 0
+    else
+        Mining.FailedPositions[tostring(Top.Pos)] = os.clock() + 60
+        Mining.ShaftFails = (Mining.ShaftFails or 0) + 1
+
+        if Mining.ShaftFails >= 3 then
+            Mining.ShaftDone[Col] = true
+            warn(("[Tunel] sutun %s kazilamiyor, baska sutuna geciliyor."):format(Col))
+        end
+    end
 end
 
 function Mining.RevealStep()
@@ -5476,6 +5756,7 @@ end
 
 function Mining.CountBreak(Block)
     Mining.LastProgressAt = os.clock()
+    Mining.LastBreakAt = os.clock()
 
     local Stats = Mining.Stats
     Stats.Blocks += 1
@@ -7750,7 +8031,65 @@ end
 Mining.LastProgressAt = os.clock()
 Mining.UnstickRequested = false
 
+-- Mine'in EN USTUNE (yuzeyin uzerine) isinlan. Grid'in hangi ucu ust bilinmedigi icin iki ucu da hesaplayip
+-- dunyada daha yuksekte olani secer (mine disindaki pad'e / lobiye isinlanmaz).
+function Mining.GoToTop()
+    local Best, CenterXZ
+
+    pcall(function()
+        local Region = World:GetRegion()
+        local CX = math.floor((Region.Min.X + Region.Max.X) / 2)
+        local CZ = math.floor((Region.Min.Z + Region.Max.Z) / 2)
+
+        for _, Y in ipairs({Region.Min.Y, Region.Max.Y}) do
+            local P = Mining.GridToWorld(CX, Y, CZ)
+
+            if typeof(P) == "Vector3" then
+                CenterXZ = CenterXZ or P
+                if not Best or P.Y > Best.Y then Best = P end
+            end
+        end
+    end)
+
+    if not Best then
+        for _, Block in pairs(World and World.Blocks or {}) do
+            if Block and Block.CFrame then
+                local P = Block.CFrame.Position
+                if not Best or P.Y > Best.Y then Best = P end
+            end
+        end
+    end
+
+    if typeof(Best) ~= "Vector3" then return false end
+
+    local Spot = Best + Vector3.new(0, (Settings.HoverHeight or 4) + 8, 0)
+
+    Mining.MoveToMiningPosition(Spot)
+    Mining.LoadAround(Spot)
+    print(("[Top] mine'in ustune cikildi (Y=%.0f)."):format(Spot.Y))
+
+    return true
+end
+
 function Mining.Unstick()
+    -- bekleme sirasinda bekci ikinci kez tetiklemesin (ust uste 2 unstick olmasin)
+    Mining.LastProgressAt = os.clock() + (Settings.UnstuckWait or 8)
+    -- takilirken ugrasilan nadiri bu mine'da bir daha deneme (ayni nadire sonsuza dek saplanmasin)
+    if tostring(Mining.Status):find("^Tunel") and Mining.CurrentTargetKey and World and
+        Mining.CurrentTargetWorld == World.Id then
+        Mining.BadOres = Mining.BadOres or {}
+        Mining.BadOres[Mining.CurrentTargetKey] = true
+        warn("[Unstick] takildigi nadir bu mine'da artik atlanacak: " .. tostring(Mining.CurrentTargetKey))
+    end
+
+    Mining.CurrentTargetKey = nil
+    Mining.TunnelTries = nil
+    Mining.TunnelWaitById = {} -- sisen bekleme surelerini sifirla
+
+    -- takildigi tuneli birak
+    if Mining.ShaftCol and Mining.ShaftDone then Mining.ShaftDone[Mining.ShaftCol] = true end
+    Mining.ShaftCol = nil
+
     -- tekrar tekrar takiliyorsa: hop (ServerHop acik) ya da karakter reset
     local Now = os.clock()
     local Recent = {}
@@ -7807,30 +8146,7 @@ function Mining.Unstick()
     end
     warn("[Unstick] uzun suredir blok kirilamadi, alanin ustune isinlaniyor.")
 
-    local Top
-
-    pcall(function()
-        local Region = World:GetRegion()
-        local CX = math.floor((Region.Min.X + Region.Max.X) / 2)
-        local CZ = math.floor((Region.Min.Z + Region.Max.Z) / 2)
-        Top = Mining.GridToWorld(CX, Region.Min.Y, CZ)
-    end)
-
-    if typeof(Top) ~= "Vector3" then
-        -- yedek: yuklu en yuksek blok
-        for _, Block in pairs(World.Blocks) do
-            if Block and Block.CFrame then
-                local P = Block.CFrame.Position
-                if not Top or P.Y > Top.Y then Top = P end
-            end
-        end
-    end
-
-    if typeof(Top) == "Vector3" then
-        local Spot = Top + Vector3.new(0, (Settings.HoverHeight or 4) + 6, 0)
-        Mining.MoveToMiningPosition(Spot)
-        Mining.LoadAround(Top)
-    end
+    Mining.GoToTop()
 
     -- takilan durumu temizle (basarisiz blok listesi korunur, tekrar ayni bloga saplanma)
     Mining.DoneColumns = {}
@@ -7849,6 +8165,7 @@ function Mining.Unstick()
     task.wait(Settings.UnstuckWait or 8)
 
     Mining.LastProgressAt = os.clock()
+    Mining.UnstickRequested = false
 end
 
 if Settings.AutoUnstuck ~= false then
@@ -7887,23 +8204,154 @@ if Settings.ServerHop == true then
     end)
 end
 
+----------------------------------------------------------------
+-- 8 SAAT MODU: uzun sure HIC blok kirilamazsa oyuna yeniden baglan (script autoexec'ten tekrar baslar)
+----------------------------------------------------------------
+Mining.LastBreakAt = os.clock()
+
+function Mining.Rejoin(Why)
+    if Mining.Rejoining then return end
+
+    Mining.Rejoining = true
+    Mining.Status = "Yeniden baglaniliyor: " .. tostring(Why)
+    warn("[Rejoin] " .. tostring(Why) .. " -> oyuna yeniden baglaniliyor.")
+
+    pcall(Mining.QueueReload)
+
+    task.spawn(function()
+        for Attempt = 1, 4 do
+            if not IsCurrentRun() then return end
+
+            local Failed = false
+            local Conn = TeleportService.TeleportInitFailed:Connect(function(_, _, Message)
+                Failed = true
+                warn("[Rejoin] teleport hatasi: " .. tostring(Message))
+            end)
+
+            print(("[Rejoin] deneme %d/4"):format(Attempt))
+
+            pcall(function()
+                if Attempt % 2 == 1 and #Players:GetPlayers() > 1 then
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) -- ayni server
+                else
+                    TeleportService:Teleport(game.PlaceId, LocalPlayer) -- herhangi bir server
+                end
+            end)
+
+            local Until = os.clock() + 30
+
+            repeat task.wait(0.5) until Failed or os.clock() > Until or not IsCurrentRun()
+
+            Conn:Disconnect()
+        end
+
+        warn("[Rejoin] yeniden baglanilamadi; farma devam, sonra tekrar denenecek.")
+        Mining.Rejoining = false
+        Mining.LastBreakAt = os.clock()
+    end)
+end
+
+if (tonumber(Settings.StuckRejoinSeconds) or 0) > 0 then
+    task.spawn(function()
+        local Limit = tonumber(Settings.StuckRejoinSeconds)
+
+        while IsCurrentRun() do
+            task.wait(10)
+
+            local Resetting = false
+            pcall(function() Resetting = Mining.IsMineResetting() end)
+
+            if Resetting or Mining.Hopping then
+                Mining.LastBreakAt = os.clock()
+            elseif not Mining.Rejoining and os.clock() - (Mining.LastBreakAt or os.clock()) > Limit then
+                Mining.Rejoin(("%d sn'dir hic blok kirilmadi (durum: %s | asama: %s)"):format(
+                    math.floor(os.clock() - Mining.LastBreakAt), tostring(Mining.Status), tostring(Mining.LoopStage)))
+            end
+        end
+    end)
+end
+
+-- TESHIS: uzun sure blok kirilmazsa 30 sn'de bir neyin beklendigini yaz
+task.spawn(function()
+    local LastReport = 0
+
+    while IsCurrentRun() do
+        task.wait(10)
+
+        local Idle = os.clock() - (Mining.LastBreakAt or os.clock())
+
+        if Idle > 45 and os.clock() - LastReport >= 30 then
+            LastReport = os.clock()
+
+            local Char = LocalPlayer.Character
+            local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
+            local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+            local Known = 0
+
+            pcall(function() for _ in pairs(World and World.Blocks or {}) do Known += 1 end end)
+
+            warn(("[Durum] %d sn'dir blok kirilmadi | asama=%s | durum=%s | karakter=%s | Y=%s | hazir=%s | yuklu blok=%d | reset=%s"):format(
+                math.floor(Idle), tostring(Mining.LoopStage), tostring(Mining.Status),
+                (Hum and Hum.Health > 0) and "canli" or "YOK/olu",
+                Root and ("%.0f"):format(Root.Position.Y) or "?",
+                tostring(Mining.Ready), Known, tostring(pcall(Mining.IsMineResetting) and Mining.IsMineResetting())))
+        end
+    end
+end)
+
+-- Bir adimi zaman sinirli calistir: donarsa iptal et (ana dongu asla kilitlenmesin)
+local function RunStep(Fn, Timeout)
+    local Done, Ok, Err = false, true, nil
+
+    local Thread = task.spawn(function()
+        Ok, Err = pcall(Fn)
+        Done = true
+    end)
+
+    local Until = os.clock() + (Timeout or 90)
+
+    while not Done and os.clock() < Until and IsCurrentRun() do
+        task.wait(0.1)
+    end
+
+    if not Done then
+        -- takildigi satiri yaz (sorunu bulmak icin)
+        local Where = "?"
+
+        pcall(function()
+            Where = tostring(debug.traceback(Thread)):gsub("\n", " <- "):sub(1, 400)
+        end)
+
+        warn("[Takilma] adim su satirda takildi: " .. Where)
+
+        pcall(task.cancel, Thread)
+        return false, ("adim %d sn'de bitmedi, iptal edildi (durum: %s)"):format(Timeout or 90, tostring(Mining.Status))
+    end
+
+    return Ok, Err
+end
+
 local LastSessionPrint = 0
 
 while task.wait() and IsCurrentRun() do
     local SessionTime = os.time() - StartingTime
 
-    if SessionTime - LastSessionPrint >= 10 then
+    if SessionTime - LastSessionPrint >= 60 then
         print("Session Time: " .. tostring(SessionTime) .. "s")
         LastSessionPrint = SessionTime
     end
 
     -- mine'da degilsek (olme / instance'tan cikma / world kaybi) otomatik geri isinlan
+    Mining.LoopStage = "mine kontrolu"
+
     if not Mining.EnsureInMine() then
+        Mining.LoopStage = "mine'da degil / hazir degil"
         task.wait(0.5)
         continue
     end
 
     if Mining.UnstickRequested then
+        Mining.LoopStage = "unstick"
         Mining.UnstickRequested = false
 
         if not Mining.IsMineResetting() then
@@ -7959,10 +8407,25 @@ while task.wait() and IsCurrentRun() do
         end
     end
 
-    local MineOk, MineErr = pcall(Mining.OreMining)
+    Mining.LoopStage = "kazma"
+    local MineOk, MineErr = RunStep(Mining.OreMining, tonumber(Settings.StepTimeout) or 90)
+    Mining.LoopStage = "kazma bitti"
 
     if not MineOk then
         warn("[Mining] hata: " .. tostring(MineErr))
+
+        -- adim dondu (zaman asimi): ugrasilan nadiri birak, yuzeye cik
+        if tostring(MineErr):find("iptal edildi", 1, true) then
+            if Mining.CurrentTargetKey then
+                Mining.BadOres = Mining.BadOres or {}
+                Mining.BadOres[Mining.CurrentTargetKey] = true
+            end
+
+            pcall(Mining.GoToTop)
+            Mining.OreMap = nil
+            Mining.LastProgressAt = os.clock()
+        end
+
         task.wait(1)
     end
 
@@ -7973,6 +8436,10 @@ while task.wait() and IsCurrentRun() do
         Mining.ActiveStandPosition = nil
         Mining.MinedPositions = {}
         Mining.FailedPositions = {}
+        Mining.BadOres = {}
+        Mining.OreFails = {}
+        Mining.TunnelTries = nil
+        pcall(Mining.ResetShafts)
 
         -- Sweep durumunu sifirla (yeni mine icin plan bastan kurulur)
         Mining.SweepPlan = nil
@@ -8018,7 +8485,21 @@ while task.wait() and IsCurrentRun() do
             end
         end
 
-        repeat task.wait(0.5) until not Mining.IsMineResetting()
+        local ResetUntil = os.clock() + 180
+        Mining.LoopStage = "mine reset bekleniyor"
+
+        repeat task.wait(0.5) until not Mining.IsMineResetting() or os.clock() > ResetUntil
+
+        -- yeni mine dolu geliyor: karakter altta/icinde kalmasin, yuzeyin ustune cik ve bloklarin yuklenmesini bekle
+        task.wait(1)
+        pcall(Mining.GoToTop)
+        task.wait(2)
+        Mining.OreMap = nil
+        Mining.RegionCache = nil
+        pcall(Mining.ResetShafts)
+
+        Mining.LastBreakAt = os.clock()
+        Mining.LastProgressAt = os.clock()
 
         -- server hop modunda: yeni mine'i bastan degerlendir (nadir var mi? yoksa hop)
         if Settings.ServerHop == true then
