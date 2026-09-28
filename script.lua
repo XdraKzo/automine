@@ -40,7 +40,11 @@ do
         -- Bir nadir bu kadar kez kirilamazsa o mine resetlenene kadar bir daha denenmez (sonsuz takilmayi onler).
         OreMaxFails = 2,
         -- Tek bir kazma adimi bu kadar sn'den uzun surerse iptal edilir (donma korumasi).
-        StepTimeout = 60,
+        StepTimeout = 90,
+        -- Nadir (Quartz/Topaz/Onyx) kirilmazsa en fazla bu kadar sn ugrasir, sonra atlar.
+        OreBreakTimeout = 20,
+        -- Nadirde her vurus oncesi en fazla bu kadar sn hedef tutulur (kirilmadikca bekleme artar).
+        OreMaxHold = 3,
         -- Blok bundan uzaksa ve kirilmadiysa blogun hemen yanina isinlanip tekrar vurur.
         CloseRange = 10,
 
@@ -329,7 +333,7 @@ end
 
 Debug = Settings.Debug or {}
 
-print(("[Script] surum: hop-v3.44 (28.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
+print(("[Script] surum: hop-v3.45 (28.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
     tostring(Settings.ServerHop), tostring(Settings.OreFarm), tostring(Settings.MineAllBlocks == true),
     table.concat(Settings.BlockPriority, ","), tostring(Settings.HopScriptURL ~= nil)))
 
@@ -3999,7 +4003,86 @@ function Mining.IsSlowBlock(Id)
     return false
 end
 
-function Mining.BreakOne(Network, Pos, Id, Block, MaxTries)
+-- Nadir (BlockPriority'deki ore): kirilana kadar OreBreakTimeout sn boyunca dener.
+-- Her tur: Target -> bekle -> Break -> kirildi mi? Kirilmadikca bekleme uzar (OreMaxHold'a kadar).
+function Mining.BreakRare(Network, Pos, Id, Block, Timeout)
+    Timeout = Timeout or tonumber(Settings.OreBreakTimeout) or 20
+    local MaxHold = tonumber(Settings.OreMaxHold) or 3
+    local Started = os.clock()
+    local Cycle = 0
+
+    Mining.OreWaitById = Mining.OreWaitById or {}
+
+    local Wait = Mining.OreWaitById[Id] or (Settings.TunnelWait or 0.05)
+
+    -- oyunun hesapladigi kirma suresi mantikliysa ondan baslat
+    local Ok, Computed = pcall(Mining.GetCachedBreakTime, Block)
+    if Ok and type(Computed) == "number" and Computed > 0 and Computed < Timeout then
+        Wait = math.max(Wait, math.min(Computed + 0.2, MaxHold))
+    end
+
+    local function WorldPos()
+        local Live = Mining.GetLiveBlock and Mining.GetLiveBlock(Pos) or Block
+        local C = (Live and Live.CFrame) or (Block and Block.CFrame)
+        return C and C.Position
+    end
+
+    while os.clock() - Started < Timeout do
+        if not IsCurrentRun() or Mining.UnstickRequested then return false end
+        if Mining.IsMineResetting and Mining.IsMineResetting() then return false end
+
+        Cycle += 1
+        Mining.LastProgressAt = os.clock() -- aktif olarak ugrasiyor; takilma korumasi araya girmesin
+
+        -- uzaktaysak blogun hemen yanina gec (uzaktan vurus sayilmiyor)
+        local W = WorldPos()
+        if W and (HumanoidRootPart.Position - W).Magnitude > (Settings.CloseRange or 10) then
+            Mining.MoveToMiningPosition(W + Vector3.new(0, 3, 0))
+            task.wait(Settings.TunnelSettle or 0.15)
+        end
+
+        Network.Fire("BlockWorlds_Target", Pos, RemoteCounter, false)
+
+        local HoldUntil = os.clock() + Wait
+        repeat task.wait(0.05) until os.clock() >= HoldUntil or not Mining.IsBlockAlive(Pos, Id)
+
+        Network.Fire("BlockWorlds_Break", Pos, RemoteCounter)
+        RemoteCounter += 1
+
+        local Until = os.clock() + (Settings.BreakConfirm or 0.5)
+        local Gone = false
+
+        repeat
+            task.wait()
+            Gone = not Mining.IsBlockAlive(Pos, Id)
+        until Gone or os.clock() >= Until
+
+        if Gone then
+            -- bir dahakine ayni ore icin buna yakin bir bekleme ile basla
+            Mining.OreWaitById[Id] = math.max(0.05, Wait * 0.9)
+            Mining.MinedPositions[tostring(Pos)] = true
+            Mining.CountBreak(Block)
+
+            if Cycle > 1 then
+                print(("[Nadir] %s kirildi (%.1f sn, %d vurus)."):format(tostring(Id), os.clock() - Started, Cycle))
+            end
+
+            return true
+        end
+
+        Wait = math.min(MaxHold, Wait * 1.4 + 0.1)
+    end
+
+    warn(("[Nadir] %s %d sn'de kirilamadi (%d vurus)."):format(tostring(Id), Timeout, Cycle))
+
+    return false
+end
+
+function Mining.BreakOne(Network, Pos, Id, Block, MaxTries, RareTimeout)
+    if Id and Settings.BlockPriority[Id] and not Mining.IsSlowBlock(Id) and (tonumber(Settings.OreBreakTimeout) or 20) > 0 then
+        return Mining.BreakRare(Network, Pos, Id, Block, RareTimeout)
+    end
+
     local Base = Settings.TunnelWait or 0.05
     local Confirm = Settings.BreakConfirm or 0.5
     local Slow = Mining.IsSlowBlock(Id)
@@ -4284,7 +4367,8 @@ function Mining.TunnelStep()
 
         local Network = Mining.GetNetwork()
 
-        if Network and Mining.BreakOne(Network, Best.Pos, Best.Id, BestBlock, 2) then
+        -- direkt deneme kisa tutulur (gomulu ise zaten kirilmaz); asil 20 sn'lik deneme tunel acildiktan sonra
+        if Network and Mining.BreakOne(Network, Best.Pos, Best.Id, BestBlock, 2, math.min(6, tonumber(Settings.OreBreakTimeout) or 20)) then
             if not Mining.DirectMode then
                 Mining.DirectMode = true
                 print("[Tunel] nadirler tunel acmadan direkt kirilabiliyor -> direkt mod (en hizli).")
