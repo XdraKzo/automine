@@ -329,7 +329,7 @@ end
 
 Debug = Settings.Debug or {}
 
-print(("[Script] surum: hop-v3.42 (27.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
+print(("[Script] surum: hop-v3.44 (28.09) | ServerHop=%s | OreFarm=%s | NormalFarm=%s | Ores=%s | HopScriptURL=%s"):format(
     tostring(Settings.ServerHop), tostring(Settings.OreFarm), tostring(Settings.MineAllBlocks == true),
     table.concat(Settings.BlockPriority, ","), tostring(Settings.HopScriptURL ~= nil)))
 
@@ -533,7 +533,12 @@ if Settings.RamSaver == true then
     task.spawn(function()
         local StatsService = game:GetService("Stats")
 
+        -- Hafiza takibi kapaliyken Stats cagrilari konsolu "Memory tracking is currently disabled" uyarisiyla doldurur
+        local TrackingOn = false
+        pcall(function() TrackingOn = StatsService.MemoryTrackingEnabled == true end)
+
         local function Mem()
+            if not TrackingOn then return 0 end
             local Ok, Value = pcall(function() return StatsService:GetTotalMemoryUsageMb() end)
             return Ok and math.floor(Value) or 0
         end
@@ -609,6 +614,7 @@ if Settings.RamSaver == true then
 
         -- RAM nereye gidiyor? (20 MB ustu kalemler)
         local function Breakdown(Label)
+            if not TrackingOn then return end
             pcall(function()
                 local Rows = {}
 
@@ -771,8 +777,8 @@ if Settings.RamSaver == true then
 
         task.wait(20)
         pcall(function() collectgarbage("collect") end)
-        print(("[RAM] temizlik tamam: %d gorsel silindi, %d model dokusu kaldirildi | bellek %d MB -> %d MB"):format(
-            Removed, Cleared, Before, Mem()))
+        print(("[RAM] temizlik tamam: %d gorsel silindi, %d model dokusu kaldirildi | %s"):format(
+            Removed, Cleared, TrackingOn and ("bellek %d MB -> %d MB"):format(Before, Mem()) or "bellek olcumu kapali (Roblox hafiza takibi kapali)"))
 
         Breakdown("sonra")
 
@@ -1294,8 +1300,18 @@ function Mining.EffectiveZone(Zone)
 
     if not Number then return nil end
 
-    -- ZoneCap: bu server'da denenip cikilamayan tavan
+    -- ZoneCap: bu server'da denenip cikilamayan tavan. Kalici degil: 10 dk sonra silinir,
+    -- ve oyun o zone'un acik oldugunu soyluyorsa hic uygulanmaz (gecis gecici bir aksaklikla basarisiz olmustur)
     local Cap = Mining.ZoneCap
+
+    if Cap and os.clock() >= (Mining.ZoneCapUntil or 0) then
+        Mining.ZoneCap, Mining.ZoneCapUntil, Cap = nil, nil, nil
+    end
+
+    if Cap and not IsMax then
+        local Owned = Mining.GetMaxZone()
+        if Owned and Owned >= Number then Cap = nil end
+    end
 
     -- "max" icin oyunun soyledigi en yuksek acik zone; sayi yazildiysa (TargetZone = 8) ona bakilmaz
     if IsMax then
@@ -1558,7 +1574,11 @@ function Mining.TeleportToZone(SpecificZone)
             end
         elseif Final < Goal then
             Mining.ZoneCap = Final
-            print(("[Teleport] zone %d'den yukari cikilamadi; bu server'da zone %d'de farm."):format(Final, Final))
+            Mining.ZoneCapUntil = os.clock() + 600
+            print(("[Teleport] zone %d'den yukari cikilamadi; simdilik zone %d'de farm, biraz sonra tekrar denenecek."):format(Final, Final))
+        else
+            Mining.ZoneRetries = 0
+            Mining.ZoneCap, Mining.ZoneCapUntil = nil, nil
         end
 
         Mining.EnsureSupport(HumanoidRootPart.Position)
@@ -5123,15 +5143,20 @@ function Mining.EnsureInMine(Force)
     end
     local ZoneOk = true
 
-    -- hala dusuk zone'da isek (gecis basarisiz oldu) 60 sn arayla en fazla 3 kez daha dene
+    -- hala dusuk zone'da isek (gecis basarisiz oldu) surekli tekrar dene: ilk 3 deneme 60 sn, sonra 3 dk arayla
     if TargetZone and WorldActive and Mining.ZoneAttempted then
         local Eff = Mining.EffectiveZone(TargetZone)
+        local Retries = Mining.ZoneRetries or 0
+        local Gap = Retries < 3 and 60 or 180
+        local Owned = Mining.GetMaxZone()
+        -- oyun bu zone'un hesapta acik olmadigini soyluyorsa 3 denemeden sonra birak (bosuna vakit kaybetmesin)
+        local Allowed = Retries < 3 or not Owned or Owned >= math.min(TargetZone, Eff or TargetZone)
 
-        if Eff and (tonumber(World.Id) or 0) < Eff and (Mining.ZoneRetries or 0) < 3 and not Mining.IsMineResetting() and
-            os.clock() - (Mining.ZoneTryAt or 0) > 60 then
-            Mining.ZoneRetries = (Mining.ZoneRetries or 0) + 1
+        if Eff and Allowed and (tonumber(World.Id) or 0) < Eff and not Mining.IsMineResetting() and
+            os.clock() - (Mining.ZoneTryAt or 0) > Gap then
+            Mining.ZoneRetries = Retries + 1
             Mining.ZoneAttempted = false
-            print(("[Teleport] hala zone %s'desin (hedef %s); yeniden deneniyor (%d/3)"):format(
+            print(("[Teleport] hala zone %s'desin (hedef %s); yeniden deneniyor (deneme %d)"):format(
                 tostring(World.Id), tostring(Eff), Mining.ZoneRetries))
         end
     end
