@@ -1,8 +1,8 @@
--- PS99 HALLOWEEN EVENT (HatchWar) LUCKY ORB FARM + OTOMATIK EGG
+-- PS99 HALLOWEEN EVENT (HatchWar) LUCKY ORB FARM + BOSS FIGHT / EGG
 -- 1) Event'te degilsen otomatik girer, son area'ya (OrbAreas.ZoneN) gecer.
 -- 2) Orb varsa toplar; orb yoksa breakable'larin ortasinda bekler (pet'ler kendileri kirar).
--- 3) Orb deposu (balkabagi sayaci, ornek 49.6k/54k) dolunca egg'e gidip acar,
---    depo bosalinca geri donup tekrar orb toplar.
+-- 3) Orb deposu dolunca boss fight atar (ekrana hizli tiklar, baloncuklara basar).
+--    DoluIslem = "egg" yaparsan boss yerine egg acar.
 
 local Ayarlar = {
     EventAdi = "HatchWar", -- instance adi (__THINGS.Instances.HatchWar)
@@ -18,11 +18,11 @@ local Ayarlar = {
     -- DEPO / EGG
     -- orb sayaci (PlayerGui icindeki yol). Bos birakirsan otomatik aranir.
     SayacYolu = "MainLeft.Left.Currency.HalloweenOrb.Lucky Orb.Amount",
-    DepoMax = 54000,     -- depo kapasitesi (ekranda 49.6k/54k -> 54000). nil = otomatik ogren
+    DepoMax = nil,       -- depo kapasitesi. nil = sayactan okunur (ornek 29.7k/67.5k -> 67500); kapasite artinca kendisi guncellenir
     DoluEsik = nil,      -- orb bu sayiya gelince egg'e git. nil = DepoMax (tam dolunca)
-    BosEsik = 10000,     -- egg acarken orb bu sayinin altina dusunce orb toplamaya don
-    HatchAdet = nil,     -- tek seferde acilacak egg sayisi (senin max'in, ornek 62). nil = oyundan okunur
-    HatchAraligi = 0.6,  -- hatch istekleri arasi bekleme (sn)
+    BosEsik = 10000,     -- (sadece egg modu) egg acarken orb bu sayinin altina dusunce orb toplamaya don
+    HatchAdet = 62,      -- tek seferde acilacak egg sayisi (her egg 100 orb: 62 egg = 6.2k). nil = deneyerek bulunur
+    HatchAraligi = 0.1,  -- hatch istekleri arasi bekleme (sn)
     AnimasyonGec = true, -- egg acarken "Click to open!" animasyonunu otomatik tikla
     DoluSeri = 4,        -- depo neredeyse doluyken ust uste bu kadar orb toplanamazsa "dolu" say
     EggKonum = nil,      -- egg otomatik bulunamazsa: egg'in onunde dur, F9'da
@@ -31,6 +31,38 @@ local Ayarlar = {
     AutoHatchAc = true,  -- egg'e varinca oyunun auto hatch'ini ac
     EggMaxSure = 600,    -- egg'de en fazla bu kadar sn kal
     EggTakilma = 45,     -- sayac bu kadar sn hic azalmazsa (hatch olmuyor) farma don
+
+    -- DOLUNCA NE YAPILSIN: "boss" = boss fight, "egg" = egg ac
+    DoluIslem = "egg",
+
+    -- BOSS FIGHT
+    BossZone = 4,        -- hangi area'nin boss'u (4 = Warlock Ahmad). "max" = en yuksek
+    TiklamaAraligi = 0.03, -- fight sirasinda ekrana tiklama araligi (sn)
+    FightMaxSure = 180,  -- bir fight en fazla bu kadar sn surer, sonra birakilir
+    FightArasi = 3,      -- iki fight arasi bekleme (sn)
+
+    -- COIN FLAG: son area'da flag dik (FlexibleFlags_Consume)
+    OtoFlag = true,
+    FlagAdi = "Coins Flag", -- envanterdeki flag'in adi (ornek: "Coins Flag", "Diamonds Flag", "Magnet Flag")
+    FlagAraligi = 60,    -- iki flag dikme arasi en az bekleme (sn). Area'da flag gorunuyorsa hic dikilmez
+
+    -- COIN ILE EGG: event coin'i cok birikince (orb'dan bagimsiz) egg ac
+    CoinEgg = true,
+    CoinId = "HatchWarCoins", -- egg'in parasi
+    CoinUst = 1e9,       -- coin bu kadar olunca egg acmaya git (1e9 = 1b)
+    CoinAlt = 2e8,       -- coin bu kadara dusunce egg'i birak (2e8 = 200m)
+
+    -- OTOMATIK UPGRADE (asa/wand parasiyla)
+    OtoUpgrade = true,
+    -- oncelik sirasi (ID'ler). Listede olmayan upgrade'lere hic dokunulmaz.
+    UpgradeOncelik = {"HatchWarOrbPower", "HatchWarOrbBank", "HatchWarOrbSpawn"},
+    -- "sirali"  = ilk upgrade max olana kadar sadece onu al (para ona saklanir), sonra siradakine gec
+    -- "yettikce" = listeyi sirayla dene, parasi yeten ilkini al
+    UpgradeMod = "sirali",
+    UpgradeAraligi = 90, -- kac sn'de bir upgrade noktasina gidilsin
+    -- upgrade noktasi otomatik bulunamazsa: noktada dur, F9'da
+    -- print(game.Players.LocalPlayer.Character.HumanoidRootPart.Position) calistir, cikani yaz:
+    UpgradeKonum = nil,  -- ornek: Vector3.new(100, 20, -300)
 
     TaramaAraligi = 0.2, -- tur arasi bekleme (sn)
     AntiAFK = true,
@@ -44,6 +76,8 @@ local function Aktif() return getgenv().OrbRunId == RunId end
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
+local GuiService = game:GetService("GuiService")
+local VIM = game:GetService("VirtualInputManager")
 local LocalPlayer = Players.LocalPlayer
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -367,7 +401,11 @@ local function Depo()
 
     if tonumber(Ayarlar.DepoMax) then
         Max = tonumber(Ayarlar.DepoMax)
-    elseif not Max or Max < Su then
+    elseif Max and Max >= Su and Max >= 5000 then
+        -- event icinde sayac dogru kapasiteyi gosterir (ornek 67.5k); hatirla
+        OgrenilenMax = Max
+    else
+        -- event disinda "30.8k/750" gibi baska bir sey gosterebiliyor: son bilinen kapasiteyi kullan
         Max = OgrenilenMax
     end
 
@@ -544,6 +582,67 @@ end
 
 local ToplamEgg = 0
 
+-- kayit verisi (Library.Save bu oyunda bos olabiliyor, Client.Save'den okunur)
+local SaveModul
+
+local function SaveGet()
+    if not SaveModul then
+        pcall(function() SaveModul = require(ReplicatedStorage.Library.Client.Save) end)
+        if not SaveModul and Library and type(Library.Save) == "table" then SaveModul = Library.Save end
+    end
+
+    local Ok, Save = pcall(function() return SaveModul.Get() end)
+    return Ok and type(Save) == "table" and Save or nil
+end
+
+-- envanterde id'si verilen esya: toplam adet, uid
+local function EnvanterBul(Id)
+    local Save = SaveGet()
+    local Toplam, Uid = 0, nil
+
+    for Kategori, Esyalar in pairs(Save and Save.Inventory or {}) do
+        -- pet kategorisi binlerce kayit olabilir, atla (aranan seyler Currency / Misc'te)
+        if type(Esyalar) == "table" and not tostring(Kategori):lower():find("pet") then
+            for U, E in pairs(Esyalar) do
+                if type(E) == "table" and E.id == Id then
+                    Toplam += tonumber(E._am) or 1
+                    Uid = Uid or U
+                end
+            end
+        end
+    end
+
+    return Toplam, Uid
+end
+
+local function KisaSayi(N)
+    if N >= 1e9 then return ("%.2fb"):format(N / 1e9) end
+    if N >= 1e6 then return ("%.1fm"):format(N / 1e6) end
+    if N >= 1e3 then return ("%.1fk"):format(N / 1e3) end
+    return tostring(math.floor(N))
+end
+
+local CoinOnbellek, CoinZaman = 0, -math.huge
+local CoinUyari, CoinYazildi = false, false
+
+local function CoinOku()
+    -- ana dongu cok sik soruyor: 2 sn onbellek
+    if os.clock() - CoinZaman < 2 then return CoinOnbellek end
+
+    CoinOnbellek, CoinZaman = EnvanterBul(Ayarlar.CoinId), os.clock()
+
+    if CoinOnbellek == 0 and not CoinUyari then
+        CoinUyari = true
+        warn("[Egg] envanterde '" .. tostring(Ayarlar.CoinId) .. "' okunamadi (0). Coin ile egg acma calismayabilir.")
+    elseif CoinOnbellek > 0 and not CoinYazildi then
+        CoinYazildi = true
+        print(("[Egg] coin: %s (egg acma %s'de baslar, %s'de durur)"):format(
+            KisaSayi(CoinOnbellek), KisaSayi(Ayarlar.CoinUst), KisaSayi(Ayarlar.CoinAlt)))
+    end
+
+    return CoinOnbellek
+end
+
 -- calisan hatch adedi (bulununca hatirlanir)
 local CalisanAdet
 local MaxArandi = false
@@ -611,7 +710,8 @@ local function HatchGonder(EggObj)
     return Basarili
 end
 
-local function EggAc(Area)
+-- Mod = "coin": coin CoinAlt'a dusene kadar ac (orb'a bakilmaz). Yoksa orb BosEsik'e dusene kadar.
+local function EggAc(Area, Mod)
     local EggPos, Ad, EggObj = EggBul(Area)
 
     if not EggPos then
@@ -624,7 +724,13 @@ local function EggAc(Area)
     Yon = Yon.Magnitude > 0.1 and Yon.Unit or Vector3.new(0, 0, 1)
     local Durak = EggPos + Yon * 7 + Vector3.new(0, 3, 0)
 
-    print(("[Egg] depo dolu -> egg'e gidiliyor: %s"):format(tostring(Ad)))
+    if Mod == "coin" then
+        print(("[Egg] coin %s -> %s'e inene kadar egg aciliyor: %s"):format(
+            KisaSayi(CoinOku()), KisaSayi(Ayarlar.CoinAlt), tostring(Ad)))
+    else
+        print(("[Egg] depo dolu -> egg'e gidiliyor: %s"):format(tostring(Ad)))
+    end
+
     Isinlan(Durak)
     task.wait(0.5)
 
@@ -632,7 +738,7 @@ local function EggAc(Area)
 
     local Basla = os.clock()
     local SonDegisim = os.clock()
-    local OncekiSu = Depo()
+    local OncekiSu = Mod == "coin" and CoinOku() or Depo()
 
     while Aktif() and os.clock() - Basla < Ayarlar.EggMaxSure do
         if Ayarlar.OtoGiris and not EventteMi() then return end
@@ -650,6 +756,27 @@ local function EggAc(Area)
                 VirtualUser:CaptureController()
                 VirtualUser:ClickButton1(Vector2.new())
             end)
+        end
+
+        if Mod == "coin" then
+            local Coin = CoinOku()
+
+            if Coin <= Ayarlar.CoinAlt then
+                ToplamEgg += 1
+                print(("[Egg] coin %s'e dustu -> farma donuluyor."):format(KisaSayi(Coin)))
+                return
+            end
+
+            if OncekiSu and Coin < OncekiSu then SonDegisim = os.clock() end
+            OncekiSu = Coin
+
+            if os.clock() - SonDegisim > Ayarlar.EggTakilma then
+                warn(("[Egg] %d sn'dir coin azalmadi (hatch olmuyor?). Farma donuluyor."):format(Ayarlar.EggTakilma))
+                return
+            end
+
+            task.wait((CalisanAdet or Ayarlar.HatchAdet) and Ayarlar.HatchAraligi or 0.15)
+            continue
         end
 
         local Su, Max = Depo()
@@ -679,12 +806,656 @@ local function EggAc(Area)
 end
 
 ----------------------------------------------------------------
+-- BOSS FIGHT
+-- Boss: __INSTANCE_CONTAINER.Active.HatchWar.INTERACT.Bosses.BossN
+-- Baslatma: boss'un yaninda E (PlayerGui.Interact.Button)
+-- Fight sirasinda karakterde HW_BossHoldPosition olur; ekrana hizli tiklanir,
+-- cikan baloncuklar PlayerGui._INSTANCES.HatchWarBoss.LiveCircle (ImageButton)
+----------------------------------------------------------------
+local function PG()
+    return LocalPlayer:FindFirstChild("PlayerGui")
+end
+
+local function GuiGorunur(Obj)
+    local Cur = Obj
+
+    while Cur and Cur ~= game do
+        if Cur:IsA("GuiObject") and not Cur.Visible then return false end
+        if Cur:IsA("ScreenGui") and not Cur.Enabled then return false end
+        Cur = Cur.Parent
+    end
+
+    return true
+end
+
+-- butonun baglantilarini dogrudan tetikle
+local function ButonaBas(Btn)
+    local Basti = false
+
+    pcall(function()
+        for _, Sinyal in ipairs({Btn.MouseButton1Down, Btn.MouseButton1Click, Btn.Activated}) do
+            for _, C in ipairs(getconnections(Sinyal)) do
+                pcall(function() C:Fire() end)
+                Basti = true
+            end
+        end
+    end)
+
+    return Basti
+end
+
+local function EkranaTikla(X, Y)
+    pcall(function()
+        VIM:SendMouseButtonEvent(X, Y, 0, true, game, 1)
+        VIM:SendMouseButtonEvent(X, Y, 0, false, game, 1)
+    end)
+end
+
+local function GuiMerkez(Btn)
+    local P = Btn.AbsolutePosition + Btn.AbsoluteSize / 2
+    local Gui = Btn:FindFirstAncestorWhichIsA("ScreenGui")
+    local Inset = Vector2.zero
+
+    if Gui and not Gui.IgnoreGuiInset then
+        Inset = GuiService:GetGuiInset()
+    end
+
+    return P.X + Inset.X, P.Y + Inset.Y
+end
+
+local function BossModeli()
+    local Event = EventModeli()
+    local Interact = Event and Event:FindFirstChild("INTERACT")
+    local Bosses = Interact and Interact:FindFirstChild("Bosses")
+
+    if not Bosses then return nil end
+
+    if Ayarlar.BossZone == "max" then
+        local En, EnNo
+
+        for _, B in ipairs(Bosses:GetChildren()) do
+            local No = tonumber(B.Name:match("(%d+)$"))
+            if No and (not EnNo or No > EnNo) then En, EnNo = B, No end
+        end
+
+        return En
+    end
+
+    return Bosses:FindFirstChild("Boss" .. tostring(Ayarlar.BossZone))
+end
+
+local function BossPos(Boss)
+    local Rig = Boss:FindFirstChild("BossRig")
+    local Part = Rig and (Rig:FindFirstChild("HumanoidRootPart") or Rig:FindFirstChild("Head"))
+
+    if Part and Part:IsA("BasePart") then return Part.Position end
+
+    return ObjPos(Boss)
+end
+
+local function FightAktif()
+    local HRP = Root()
+    return HRP ~= nil and HRP:FindFirstChild("HW_BossHoldPosition") ~= nil
+end
+
+-- boss'un yaninda E'ye bas (oyunun Interact butonu + klavye + varsa ProximityPrompt)
+local function EBas(Boss)
+    local G = PG()
+    local Interact = G and G:FindFirstChild("Interact")
+    local Btn = Interact and Interact:FindFirstChild("Button")
+
+    if Btn and Btn:IsA("GuiButton") and GuiGorunur(Btn) then
+        ButonaBas(Btn)
+    end
+
+    pcall(function()
+        VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+        task.wait(0.05)
+        VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    end)
+
+    if fireproximityprompt then
+        for _, D in ipairs(Boss:GetDescendants()) do
+            if D:IsA("ProximityPrompt") then pcall(fireproximityprompt, D) end
+        end
+    end
+end
+
+-- ekrandaki baloncuklara bas. doner: kac baloncuga basildi
+local BaloncukGoruldu = setmetatable({}, {__mode = "k"})
+local BaloncukLog = 0
+local BossGuiUyari = false
+
+local function SinyalSay(Btn, Ad)
+    local Ok, Liste = pcall(function() return getconnections(Btn[Ad]) end)
+    return Ok and #Liste or -1
+end
+
+local function BaloncuklaraBas()
+    local G = PG()
+    local Inst = G and G:FindFirstChild("_INSTANCES")
+    local Boss = Inst and Inst:FindFirstChild("HatchWarBoss")
+
+    if not Boss then
+        if not BossGuiUyari then
+            BossGuiUyari = true
+            local Adlar = {}
+            for _, C in ipairs(Inst and Inst:GetChildren() or {}) do table.insert(Adlar, C.Name) end
+            warn("[Baloncuk] _INSTANCES.HatchWarBoss yok. _INSTANCES icinde: " .. table.concat(Adlar, ", "))
+        end
+        return 0
+    end
+
+    local Sayi = 0
+
+    for _, D in ipairs(Boss:GetDescendants()) do
+        if D:IsA("GuiButton") and D.Name == "LiveCircle" and D.Visible and D.AbsoluteSize.X > 0 then
+            local X, Y = GuiMerkez(D)
+            local Ham = D.AbsolutePosition + D.AbsoluteSize / 2
+
+            -- tani: ilk 3 baloncugun ozellikleri
+            if not BaloncukGoruldu[D] then
+                BaloncukGoruldu[D] = true
+
+                if BaloncukLog < 3 then
+                    BaloncukLog += 1
+                    local Ekran = D:FindFirstAncestorWhichIsA("ScreenGui")
+                    print(("[Baloncuk] #%d %s | konum=%.0f,%.0f boyut=%.0f,%.0f | IgnoreGuiInset=%s | baglanti: Down=%d Click=%d Activated=%d InputBegan=%d"):format(
+                        BaloncukLog, D:GetFullName(), Ham.X, Ham.Y, D.AbsoluteSize.X, D.AbsoluteSize.Y,
+                        tostring(Ekran and Ekran.IgnoreGuiInset), SinyalSay(D, "MouseButton1Down"),
+                        SinyalSay(D, "MouseButton1Click"), SinyalSay(D, "Activated"), SinyalSay(D, "InputBegan")))
+
+                    task.delay(0.6, function()
+                        print(("[Baloncuk] #%d tiklandiktan sonra: %s"):format(BaloncukLog,
+                            (D.Parent and D.Visible) and "HALA DURUYOR (tik islemedi)" or "kayboldu (tik islendi)"))
+                    end)
+                end
+            end
+
+            -- 1) butonun baglantilarini tetikle
+            ButonaBas(D)
+
+            -- 2) fareyi ustune goturup tikla (inset'li ve inset'siz)
+            pcall(function()
+                VIM:SendMouseMoveEvent(X, Y, game)
+                VIM:SendMouseButtonEvent(X, Y, 0, true, game, 1)
+                VIM:SendMouseButtonEvent(X, Y, 0, false, game, 1)
+
+                if X ~= Ham.X or Y ~= Ham.Y then
+                    VIM:SendMouseMoveEvent(Ham.X, Ham.Y, game)
+                    VIM:SendMouseButtonEvent(Ham.X, Ham.Y, 0, true, game, 1)
+                    VIM:SendMouseButtonEvent(Ham.X, Ham.Y, 0, false, game, 1)
+                end
+            end)
+
+            -- 3) VirtualUser ile tikla
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton1(Vector2.new(Ham.X, Ham.Y))
+            end)
+
+            Sayi += 1
+        end
+    end
+
+    return Sayi
+end
+
+local BossUyari = false
+local ToplamFight = 0
+
+local function BossFight(Area)
+    local Boss = BossModeli()
+
+    if not Boss then
+        if not BossUyari then
+            BossUyari = true
+            warn("[Boss] boss bulunamadi (INTERACT.Bosses.Boss" .. tostring(Ayarlar.BossZone) .. ").")
+        end
+
+        task.wait(5)
+        return
+    end
+
+    local Pos = BossPos(Boss)
+    if not Pos then task.wait(5) return end
+
+    -- boss'un onunde dur (area tarafina dogru 8 stud)
+    local Yon = Area and (Area.Position - Pos) * Vector3.new(1, 0, 1) or Vector3.new(0, 0, 1)
+    Yon = Yon.Magnitude > 0.1 and Yon.Unit or Vector3.new(0, 0, 1)
+    local Durak = Pos + Yon * 8 + Vector3.new(0, 3, 0)
+
+    print(("[Boss] depo dolu -> boss fight: %s"):format(Boss.Name))
+
+    -- fight'i baslat (3 deneme)
+    for Deneme = 1, 3 do
+        if FightAktif() then break end
+
+        Isinlan(Durak)
+        task.wait(0.6)
+        EBas(Boss)
+
+        local Son = os.clock() + 6
+        repeat task.wait(0.2) until FightAktif() or os.clock() > Son or not Aktif()
+
+        if not FightAktif() then
+            warn(("[Boss] fight baslamadi (deneme %d/3)"):format(Deneme))
+        end
+    end
+
+    if not FightAktif() then
+        warn("[Boss] fight baslatilamadi; biraz sonra tekrar denenecek.")
+        task.wait(Ayarlar.FightArasi)
+        return
+    end
+
+    ToplamFight += 1
+    print(("[Boss] fight basladi (#%d)."):format(ToplamFight))
+
+    local Basla = os.clock()
+    local Baloncuk = 0
+    local Kamera = workspace.CurrentCamera
+    local DokumZamani = {4, 7}
+
+    while FightAktif() and Aktif() and os.clock() - Basla < Ayarlar.FightMaxSure do
+        -- tani (ilk 2 fight): fight ekranindaki GUI'leri yaz, baloncugun gercek adini/yerini gormek icin
+        if ToplamFight <= 2 and DokumZamani[1] and os.clock() - Basla >= DokumZamani[1] then
+            table.remove(DokumZamani, 1)
+
+            local G = PG()
+            local Inst = G and G:FindFirstChild("_INSTANCES")
+            local Satir = 0
+
+            print(("[Dokum] fight %d, %.0f. sn ---- _INSTANCES: %s"):format(ToplamFight, os.clock() - Basla,
+                Inst and #Inst:GetChildren() .. " oge" or "YOK"))
+
+            for _, Kok in ipairs(Inst and Inst:GetChildren() or {}) do
+                if Kok.Name:lower():find("boss") or Kok.Name:lower():find("hatchwar") then
+                    for _, D in ipairs(Kok:GetDescendants()) do
+                        if D:IsA("GuiObject") and Satir < 40 then
+                            Satir += 1
+                            print(("[Dokum]   %s (%s) gorunur=%s boyut=%.0fx%.0f"):format(
+                                D:GetFullName():gsub("^.-_INSTANCES%.", ""), D.ClassName, tostring(GuiGorunur(D)),
+                                D.AbsoluteSize.X, D.AbsoluteSize.Y))
+                        end
+                    end
+                end
+            end
+        end
+
+        -- ekrana hizli tikla (ortaya)
+        local Boyut = Kamera and Kamera.ViewportSize or Vector2.new(800, 600)
+        EkranaTikla(Boyut.X / 2, Boyut.Y / 2)
+
+        -- baloncuk cikarsa hemen bas
+        Baloncuk += BaloncuklaraBas()
+
+        task.wait(Ayarlar.TiklamaAraligi)
+    end
+
+    print(("[Boss] fight bitti (%.0f sn, %d baloncuga basildi)."):format(os.clock() - Basla, Baloncuk))
+    task.wait(Ayarlar.FightArasi)
+end
+
+----------------------------------------------------------------
+-- COIN FLAG: area'da flag yoksa envanterden dik (FlexibleFlags_Consume(flagAdi, uid))
+----------------------------------------------------------------
+local SonFlag = 0
+local FlagUyari = false
+local FlagLog = 0
+
+-- area'da (secilen flag turunde) flag var mi? __THINGS.Flags icine bakilir
+local function AreadaFlagVar(Area)
+    local T = Things()
+    local Klasor = T and T:FindFirstChild("Flags")
+    local Tur = Ayarlar.FlagAdi:lower():gsub("%s*flag", "") -- "coins"
+
+    for _, F in ipairs(Klasor and Klasor:GetChildren() or {}) do
+        local Pos = ObjPos(F)
+
+        if Pos and BolgedeMi(Area, Pos) then
+            local Metin = F.Name:lower()
+
+            for K, V in pairs(F:GetAttributes()) do Metin ..= " " .. tostring(K):lower() .. "=" .. tostring(V):lower() end
+            for _, D in ipairs(F:GetDescendants()) do Metin ..= " " .. D.Name:lower() end
+
+            if Metin:find(Tur, 1, true) then return true, F end
+        end
+    end
+
+    return false
+end
+
+local function FlagKontrol(Area)
+    if not Ayarlar.OtoFlag or not Area then return end
+    if os.clock() - SonFlag < Ayarlar.FlagAraligi then return end
+
+    if AreadaFlagVar(Area) then
+        SonFlag = os.clock()
+        return
+    end
+
+    local Adet, Uid = EnvanterBul(Ayarlar.FlagAdi)
+
+    if not Uid or Adet <= 0 then
+        if not FlagUyari then
+            FlagUyari = true
+            warn("[Flag] envanterde '" .. Ayarlar.FlagAdi .. "' yok; flag dikilmeyecek.")
+        end
+        return
+    end
+
+    SonFlag = os.clock()
+
+    -- area'nin ortasinda dur ve dik
+    local Merkez = BreakableMerkezi(Area) or Area.Position
+    Isinlan(Merkez + Vector3.new(0, 4, 0))
+    task.wait(0.4)
+
+    local Ok, Sonuc = Iste("FlexibleFlags_Consume", Ayarlar.FlagAdi, Uid)
+
+    FlagLog += 1
+    if FlagLog <= 5 or not (Ok and Sonuc) then
+        print(("[Flag] %s dikildi -> ok=%s sonuc=%s (kalan %d)"):format(Ayarlar.FlagAdi, tostring(Ok), tostring(Sonuc), Adet - 1))
+    end
+
+    -- tani: ilk dikiste Flags klasorunde ne olustugunu yaz
+    if FlagLog == 1 then
+        task.delay(2, function()
+            local Var, F = AreadaFlagVar(Area)
+            local T = Things()
+            local Klasor = T and T:FindFirstChild("Flags")
+            local Adlar = {}
+            for _, C in ipairs(Klasor and Klasor:GetChildren() or {}) do table.insert(Adlar, C.Name) end
+            print(("[Flag] Flags klasoru: %s | area'da %s flag'i gorunuyor: %s"):format(
+                table.concat(Adlar, ", "), Ayarlar.FlagAdi, Var and F:GetFullName() or "HAYIR (her " .. Ayarlar.FlagAraligi .. " sn'de bir dikilecek)"))
+        end)
+    end
+end
+
+-- depo dolunca ne yapilacak
+local function DoluIslemYap(Area)
+    if Ayarlar.DoluIslem == "egg" then
+        EggAc(Area)
+    else
+        BossFight(Area)
+    end
+end
+
+----------------------------------------------------------------
+-- OTOMATIK UPGRADE
+-- Upgrade verisi: Library.EventUpgrades (HatchWarOrbPower, HatchWarOrbBank, HatchWarOrbSpawn, ... her biri 5 seviye)
+-- Satin alma yolu ve seviye kaydi oyun surumune gore degisebildigi icin otomatik aranir, bulunan konsola yazilir.
+----------------------------------------------------------------
+local UpgVeri
+local UpgSatinAl          -- function(Id) -> ok, sonuc
+local UpgSeviyeOku        -- function(Id) -> seviye (number) ya da nil
+local UpgHazir = false
+local UpgLog = 0
+
+local function UpgKur()
+    UpgHazir = true
+
+    UpgVeri = Library and Library.EventUpgrades
+    if type(UpgVeri) ~= "table" then
+        pcall(function()
+            UpgVeri = require(ReplicatedStorage.Library.Directory:FindFirstChild("EventUpgrades", true))
+        end)
+    end
+
+    -- 1) oyunun upgrade modulu (Purchase / GetTier fonksiyonu olan)
+    for Ad, Mod in pairs(Library or {}) do
+        if type(Mod) == "table" and tostring(Ad):lower():find("upgrade") then
+            local _, Satin = pcall(function() return Mod.Purchase end)
+            local _, Tier = pcall(function() return Mod.GetTier end)
+
+            if not UpgSatinAl and type(Satin) == "function" then
+                local Fn = Satin
+                UpgSatinAl = function(Id)
+                    pcall(function() setthreadidentity(2) end)
+                    local Ok, Sonuc = pcall(Fn, Id)
+                    pcall(function() setthreadidentity(8) end)
+                    return Ok, Sonuc
+                end
+                print(("[Upg] satin alma: Library.%s.Purchase"):format(tostring(Ad)))
+            end
+
+            if not UpgSeviyeOku and type(Tier) == "function" then
+                local Fn = Tier
+                UpgSeviyeOku = function(Id)
+                    local Ok, T = pcall(Fn, Id)
+                    return Ok and tonumber(T) or nil
+                end
+                print(("[Upg] seviye okuma: Library.%s.GetTier"):format(tostring(Ad)))
+            end
+        end
+    end
+
+    -- 2) yedek: adinda upgrade + purchase/buy gecen remote
+    if not UpgSatinAl then
+        local Net = ReplicatedStorage:FindFirstChild("Network")
+
+        for _, R in ipairs(Net and Net:GetChildren() or {}) do
+            local L = R.Name:lower()
+
+            if L:find("upgrade") and (L:find("purchase") or L:find("buy")) and not L:find("pet") then
+                local Ad = R.Name
+                UpgSatinAl = function(Id) return Iste(Ad, Id) end
+                print(("[Upg] satin alma: remote '%s'"):format(Ad))
+                break
+            end
+        end
+    end
+
+    -- 3) yedek: seviyeyi kayit verisinden bul (anahtari upgrade ID'si olan sayi)
+    if not UpgSeviyeOku then
+        local Ok, Save = pcall(function() return Library.Save.Get() end)
+
+        if Ok and type(Save) == "table" then
+            local Ornek = Ayarlar.UpgradeOncelik[1]
+            local Gorulen = {}
+
+            -- deger sayi da olabilir, {Tier = 3} gibi tablo da
+            local function Sayi(V)
+                if tonumber(V) then return tonumber(V) end
+                if type(V) == "table" then
+                    return tonumber(rawget(V, "Tier") or rawget(V, "tier") or rawget(V, "Level") or rawget(V, "level") or rawget(V, "_am"))
+                end
+            end
+
+            local function Ara(T, Derinlik)
+                if Derinlik > 5 or Gorulen[T] then return end
+                Gorulen[T] = true
+
+                if Sayi(rawget(T, Ornek)) ~= nil then return T end
+
+                for _, V in pairs(T) do
+                    if type(V) == "table" then
+                        local Bulunan = Ara(V, Derinlik + 1)
+                        if Bulunan then return Bulunan end
+                    end
+                end
+            end
+
+            local Tablo = Ara(Save, 1)
+
+            if Tablo then
+                UpgSeviyeOku = function(Id) return Sayi(rawget(Tablo, Id)) or 0 end
+                print(("[Upg] seviye okuma: kayit verisi (%s = %s)"):format(Ornek, tostring(UpgSeviyeOku(Ornek))))
+            end
+        end
+    end
+
+    if not UpgSatinAl then
+        warn("[Upg] upgrade satin alma yolu bulunamadi; otomatik upgrade kapali.")
+    end
+
+    if not UpgSeviyeOku then
+        warn("[Upg] upgrade seviyeleri okunamadi; upgrade'ler seviyeye bakmadan sirayla denenecek.")
+    end
+end
+
+-- seviyeyi upgrade penceresinden oku: "Orb Power III" = seviye 2 (sonraki alinacak III), isim yalniz = seviye 0
+local Romen = {I = 1, II = 2, III = 3, IV = 4, V = 5, VI = 6, VII = 7, VIII = 8, IX = 9, X = 10}
+
+local function UpgIsimHam(Id)
+    local V = type(UpgVeri) == "table" and UpgVeri[Id]
+    return type(V) == "table" and rawget(V, "Name") or nil
+end
+
+local function GuiSeviye(Id)
+    local Isim = UpgIsimHam(Id)
+    local G = LocalPlayer:FindFirstChild("PlayerGui")
+    if not Isim or not G then return nil end
+
+    local Kalip = "^%s*" .. Isim:gsub("%p", "%%%0") .. "%s*([IVX]*)%s*$"
+
+    for _, D in ipairs(G:GetDescendants()) do
+        if D:IsA("TextLabel") then
+            local R = D.Text:match(Kalip)
+
+            if R then
+                -- ayni satirda MAX yaziyor mu?
+                local Satir = D.Parent
+
+                for _, S in ipairs(Satir and Satir:GetDescendants() or {}) do
+                    if (S:IsA("TextLabel") or S:IsA("TextButton")) and S.Text:lower():find("max", 1, true) then
+                        return 99
+                    end
+                end
+
+                return R == "" and 0 or ((Romen[R] or 1) - 1)
+            end
+        end
+    end
+end
+
+local function UpgMaxSeviye(Id)
+    local V = type(UpgVeri) == "table" and UpgVeri[Id]
+    local Costs = type(V) == "table" and rawget(V, "TierCosts")
+    return type(Costs) == "table" and #Costs or 5
+end
+
+local function UpgIsim(Id)
+    local V = type(UpgVeri) == "table" and UpgVeri[Id]
+    return type(V) == "table" and rawget(V, "Name") or Id
+end
+
+-- doner: true = bir upgrade alindi
+local function UpgradeTur()
+    if not UpgHazir then UpgKur() end
+    if not UpgSatinAl then return false end
+
+    for _, Id in ipairs(Ayarlar.UpgradeOncelik or {}) do
+        local Seviye = (UpgSeviyeOku and UpgSeviyeOku(Id)) or GuiSeviye(Id)
+        local Max = UpgMaxSeviye(Id)
+
+        if not (Seviye and Seviye >= Max) then
+            local Ok, Sonuc = UpgSatinAl(Id)
+            task.wait(0.5)
+            local Yeni = (UpgSeviyeOku and UpgSeviyeOku(Id)) or GuiSeviye(Id)
+
+            -- tani: ilk denemelerin sonucunu yaz
+            UpgLog = (UpgLog or 0) + 1
+            if UpgLog <= 6 then
+                print(("[Upg] deneme %s (seviye %s) -> ok=%s sonuc=%s"):format(
+                    UpgIsim(Id), tostring(Seviye or "?"), tostring(Ok), tostring(Sonuc)))
+            end
+            local Alindi = (Seviye and Yeni and Yeni > Seviye) or (Ok and Sonuc ~= false and Sonuc ~= nil)
+
+            if Alindi then
+                print(("[Upg] ALINDI: %s -> seviye %s/%d"):format(UpgIsim(Id), tostring(Yeni or "?"), Max))
+                return true
+            end
+
+            -- "sirali" modda para ilk eksik upgrade'e saklanir, alttakilere gecilmez
+            if Ayarlar.UpgradeMod ~= "yettikce" then return false end
+        end
+    end
+
+    return false
+end
+
+-- upgrade noktasi: ayar ya da event modelinde adinda "upgrade" gecen parca
+local UpgNoktaUyari = false
+
+local function UpgradeNoktasi()
+    if typeof(Ayarlar.UpgradeKonum) == "Vector3" then return Ayarlar.UpgradeKonum, "UpgradeKonum ayari" end
+
+    local Event = EventModeli()
+    local En, EnAd
+
+    for _, D in ipairs(Event and Event:GetDescendants() or {}) do
+        if (D:IsA("BasePart") or D:IsA("Model")) and D.Name:lower():find("upgrade", 1, true) then
+            local P = ObjPos(D)
+            if P then
+                -- pad / touch parcasi varsa onu tercih et
+                local Touch = D:IsA("BasePart") and D:FindFirstChildOfClass("TouchTransmitter")
+                if not En or Touch then En, EnAd = P, D:GetFullName() end
+                if Touch then break end
+            end
+        end
+    end
+
+    if not En and not UpgNoktaUyari then
+        UpgNoktaUyari = true
+        warn("[Upg] upgrade noktasi bulunamadi. Ayarlar.UpgradeKonum'a konumu yaz (aciklama ayarlarda).")
+    end
+
+    return En, EnAd
+end
+
+-- upgrade noktasina git, alinabilenleri al, eski yere don
+local SonrakiUpg = os.clock() + 10
+
+local function UpgradeZiyaret()
+    if not Ayarlar.OtoUpgrade or os.clock() < SonrakiUpg then return end
+    SonrakiUpg = os.clock() + Ayarlar.UpgradeAraligi
+
+    if not UpgHazir then UpgKur() end
+    if not UpgSatinAl then return end
+
+    local Nokta, Ad = UpgradeNoktasi()
+    if not Nokta then return end
+
+    local HRP = Root()
+    if not HRP then return end
+
+    local Eski = HRP.CFrame
+
+    Isinlan(Nokta + Vector3.new(0, 3, 0))
+    task.wait(1.2) -- sunucu konumu gorsun / pencere acilsin
+
+    local Alinan = 0
+    local Ok, Err = pcall(function()
+        for _ = 1, 10 do
+            if not UpgradeTur() then break end
+            Alinan += 1
+            task.wait(0.4)
+        end
+    end)
+
+    if not Ok then warn("[Upg] hata: " .. tostring(Err)) end
+
+    if Alinan > 0 or UpgLog <= 6 then
+        print(("[Upg] upgrade noktasi (%s): %d upgrade alindi."):format(tostring(Ad), Alinan))
+    end
+
+    HRP = Root()
+    if HRP then
+        HRP.CFrame = Eski
+        HRP.AssemblyLinearVelocity = Vector3.zero
+    end
+end
+
+----------------------------------------------------------------
 -- ANA DONGU
 ----------------------------------------------------------------
 local AreaUyari = false
 local SonArea
+local SonBSayi, SonBYazim
 
-print("[Orb] lucky orb farm + otomatik egg basladi.")
+print("[Orb] lucky orb farm + boss fight / egg basladi.")
 SayacBul()
 
 while Aktif() do
@@ -715,9 +1486,22 @@ while Aktif() do
         warn("[Orb] OrbAreas bulunamadi. Tum orb'lar hedeflenecek.")
     end
 
-    -- depo dolu: egg ac
+    -- arada bir upgrade noktasina gidip upgrade al
+    UpgradeZiyaret()
+
+    -- son area'da coin flag
+    FlagKontrol(Area)
+
+    -- coin cok birikince (orb'dan bagimsiz) egg ac
+    if Ayarlar.CoinEgg and CoinOku() >= Ayarlar.CoinUst then
+        EggAc(Area, "coin")
+        continue
+    end
+
+    -- depo dolu: boss fight (ya da egg). Fight'tan sonra hemen orb toplamaya donulur,
+    -- depo tekrar dolunca yeni fight atilir (fight luck'i en yuksekken oynanir)
     if DepoDoluMu() then
-        EggAc(Area)
+        DoluIslemYap(Area)
         continue
     end
 
@@ -725,11 +1509,19 @@ while Aktif() do
 
     if #Orbs > 0 then
         if OrblariTopla(Orbs) then
-            EggAc(Area)
+            DoluIslemYap(Area)
         end
     else
         -- orb yok: breakable'larin ortasinda bekle, pet'ler kirsin
-        local Merkez = BreakableMerkezi(Area) or (Area and Area.Position)
+        local BMerkez, BSayi = BreakableMerkezi(Area)
+        local Merkez = BMerkez or (Area and Area.Position)
+
+        -- tani: area'daki breakable sayisi degisince yaz (30 sn'de bir en fazla)
+        if (BSayi or 0) ~= SonBSayi and os.clock() - (SonBYazim or 0) > 30 then
+            SonBSayi, SonBYazim = BSayi or 0, os.clock()
+            print(("[Farm] area'da %d breakable var%s"):format(BSayi or 0,
+                BSayi and " -> ortalarinda bekleniyor" or " (pet'lerin kiracagi bir sey yok)"))
+        end
 
         if Merkez and (HRP.Position - Merkez).Magnitude > 12 then
             Isinlan(Merkez + Vector3.new(0, 4, 0))
