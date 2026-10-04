@@ -93,6 +93,9 @@ local Ayarlar = {
     RamSaver = true,     -- doku / efekt / diger oyuncu karakterleri silinir (orb, breakable, egg'e dokunulmaz)
     RamSaverAgresif = false, -- true: sesler + sus esyalari (ornament vb.) da silinir (daha cok RAM, gorunum bozulur)
 
+    -- BASLANGIC: Delta autoexec script'i oyun yuklenmeden baslatiyor; yukleme bitince bu kadar sn daha bekle
+    BaslangicBekleme = 10,
+
     TaramaAraligi = 0.2, -- tur arasi bekleme (sn)
     AntiAFK = true,
 }
@@ -122,6 +125,44 @@ local LocalPlayer = Players.LocalPlayer
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+-- oyunun yuklenmesini bekle (Delta autoexec'te script cok erken basliyor): oyuncu verisi + yukleme ekrani + __THINGS
+do
+    local Basla = os.clock()
+    local Yazildi = false
+
+    local function YuklemeEkraniAcik()
+        local G = LocalPlayer:FindFirstChild("PlayerGui")
+        if not G then return true end
+
+        for _, Ekr in ipairs(G:GetChildren()) do
+            if Ekr:IsA("ScreenGui") and Ekr.Enabled and Ekr.Name:lower():find("load", 1, true) then return true end
+        end
+
+        return false
+    end
+
+    repeat
+        local Things_ = workspace:FindFirstChild("__THINGS")
+        local Hazir = LocalPlayer:GetAttribute("__LOADED") and Things_ and Things_:FindFirstChild("Instances")
+            and not YuklemeEkraniAcik()
+
+        if Hazir then break end
+
+        if not Yazildi and os.clock() - Basla > 3 then
+            Yazildi = true
+            print("[Orb] oyun yukleniyor, bitmesi bekleniyor...")
+        end
+
+        task.wait(0.5)
+    until os.clock() - Basla > 120
+
+    local Ek = tonumber(Ayarlar.BaslangicBekleme) or 10
+    if Ek > 0 then
+        print(("[Orb] oyun yuklendi, %d sn daha bekleniyor..."):format(Ek))
+        task.wait(Ek)
+    end
+end
 
 local Library
 pcall(function() Library = require(ReplicatedStorage:WaitForChild("Library")) end)
@@ -216,14 +257,10 @@ local function EventModeli()
 end
 
 local function EventteMi()
-    local Cmds = Library and Library.InstancingCmds
-
-    if Cmds and Cmds.GetInstanceID then
-        local Ok, Id = pcall(Cmds.GetInstanceID)
-        if Ok and Id == Ayarlar.EventAdi then return true end
-    end
-
-    return EventModeli() ~= nil
+    -- oyun "instance = HatchWar" deyip harita henuz yuklenmemis olabiliyor: event modelinin INTERACT'i gelmeden
+    -- event'te sayma (yoksa yanlis yere, ornek ana dunyadaki egg'lere gidiliyor)
+    local Model = EventModeli()
+    return Model ~= nil and Model:FindFirstChild("INTERACT") ~= nil
 end
 
 local function PadCFrame(Pad)
@@ -590,12 +627,16 @@ local EggUyari = false
 local function EggBul(Area)
     if typeof(Ayarlar.EggKonum) == "Vector3" then return Ayarlar.EggKonum, "EggKonum ayari" end
 
-    local Merkez = Area and Area.Position or (Root() and Root().Position)
+    -- area yoksa (event yuklenmedi) egg arama: ana dunyadaki egg'lere gidilmesin
+    if not Area then return nil end
+
+    local Merkez = Area.Position
     local Adaylar = {}
 
     local function Ekle(Obj)
         local Pos = ObjPos(Obj)
-        if Pos then table.insert(Adaylar, {Obj = Obj, Pos = Pos}) end
+        -- sadece area'nin yakinindaki egg (event egg'i); uzaktakiler baska yerin egg'i
+        if Pos and (Pos - Merkez).Magnitude <= 600 then table.insert(Adaylar, {Obj = Obj, Pos = Pos}) end
     end
 
     -- event egg'leri __THINGS.CustomEggs icinde, isimleri uid (ornek 7527e336fea5...).
@@ -2528,7 +2569,7 @@ do
             local function AgresifTemizlik()
                 local T = Things()
                 -- sus esyalari / yerdeki ganimet gorselleri (script kullanmiyor)
-                for _, Ad in ipairs({"Ornaments", "Lootbags", "Booths", "Hoverboards", "PetsHidden"}) do
+                for _, Ad in ipairs({"Ornaments", "Lootbags", "Booths", "Hoverboards"}) do
                     local Klasor = T and T:FindFirstChild(Ad)
                     if Klasor then pcall(function() Klasor:ClearAllChildren() end) end
                 end
@@ -2558,6 +2599,7 @@ end
 -- ANA DONGU
 ----------------------------------------------------------------
 local AreaUyari = false
+local AreaBekleme = 0
 local SonArea
 local SonBSayi, SonBYazim
 
@@ -2582,14 +2624,29 @@ while Aktif() do
 
     if Area then
         AreaUyari = false
+        AreaBekleme = 0
 
         if SonArea ~= Area then
             SonArea = Area
             print(("[Orb] hedef area: Zone%d (%s) boyut=%s"):format(AreaNo, Area:GetFullName(), tostring(Area.Size)))
         end
-    elseif not AreaUyari then
-        AreaUyari = true
-        warn("[Orb] OrbAreas bulunamadi. Tum orb'lar hedeflenecek.")
+    else
+        -- area (zone) henuz yuklenmedi: hicbir sey yapma, bekle; 20 sn'de gelmezse event'e yeniden gir
+        AreaBekleme += 1
+        Durum = "Waiting for event area to load"
+
+        if not AreaUyari then
+            AreaUyari = true
+            warn("[Orb] event area'si (OrbAreas) henuz yok, yuklenmesi bekleniyor...")
+        end
+
+        if AreaBekleme >= 20 then
+            AreaBekleme = 0
+            EventeGir()
+        end
+
+        task.wait(1)
+        continue
     end
 
     -- arada bir upgrade noktasina gidip upgrade al
